@@ -7,4 +7,5 @@ coastline_preload/
 GEBCO_16_Aug_2026_0358c7481d60/
 report.json
 manifest.jsonl
-
+audit_ckpt.pt
+dp_vla_workflow.pt

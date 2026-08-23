@@ -1,23 +1,41 @@
 #!/usr/bin/env python3
 """
-Diffusion Transformer (DiT) Training for AIS Trajectory Prediction.
-Implements HDP paper: VP noise schedule, τ₀-prediction, hybrid loss with detach, DPM-Solver sampling.
+Diffusion Transformer Training for Trajectory Prediction.
+Aligned with official HDP-navsim DP-VLA base architecture and diffusion pipeline.
 
-Key HDP paper insights implemented:
-1. VP (variance-preserving) noise schedule following Zheng et al. (2025)
-2. τ₀-prediction (direct velocity prediction) instead of ε-prediction
-3. Hybrid loss with detached integral (Algorithm 1, Appendix D.3)
-4. DPM-Solver with 6 steps for fast sampling (Appendix D.4)
-5. Velocity representation [vx, vy, theta, yaw_rate] with waypoint supervision
+- Model: DpVlaModel (CustomDiT decoder + adaLN-zero blocks + CustomCrossAttention)
+- Sampling: DiffusionSDE + NoiseScheduleVP + DPM_Solver
+- Loss: Prediction loss + Hybrid waypoint loss with detached_integral
 """
 
+import os
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from preparedataset import AISScenarioDataset
-from model import SceneContextEncoder, AISDiffusionTransformer
-from utils import GaussianDiffusion, hybrid_loss, detached_integral
+from model import (
+    DpVlaConfig,
+    DpVlaModel,
+    DiffusionSDE,
+    NoiseScheduleVP,
+    TimeSampler,
+)
+from utils import detached_integral, hybrid_loss
+
+
+def waypoint_to_diff(actions: torch.Tensor) -> torch.Tensor:
+    """Official waypoint to step-diff conversion."""
+    xy = actions[..., :2]
+    origin = torch.zeros_like(xy[..., :1, :])
+    prev_xy = torch.cat([origin, xy[..., :-1, :]], dim=-2)
+    return torch.cat([xy - prev_xy, actions[..., 2:4]], dim=-1)
+
+
+def diff_to_waypoint(actions: torch.Tensor) -> torch.Tensor:
+    """Official step-diff back to waypoint conversion."""
+    xy = torch.cumsum(actions[..., :2], dim=-2)
+    return torch.cat([xy, actions[..., 2:4]], dim=-1)
 
 
 def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
@@ -41,27 +59,13 @@ def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
 
 
 def main():
-    # Configuration matching HDP paper
     SCENARIO_DIR = "/run/media/akshat/Akshat_USB/generated_scenarios3"
     OBS_FRAMES = 20
     PRED_FRAMES = 20
     MAX_AGENTS = 10
     MAX_POLYLINES = 20
-    FEATURE_DIM = 6        # Input feature dim (x, y, vx, vy, theta, yaw_rate)
-    TARGET_DIM = 4         # Target feature dim (vx, vy, theta, yaw_rate) - velocity representation
-    EMBED_DIM = 256
     BATCH_SIZE = 32
     EPOCHS = 100
-    DIFFUSION_STEPS = 1000
-    
-    # HDP paper hyperparameters (Table 6)
-    HYBRID_LOSS_WEIGHT = 0.1      # ω = 0.1 from paper
-    DETACH_WINDOW = 3             # W = 3 from paper (L-1 where L=6, but we use L=20, so W=3 is reasonable)
-    DT = 10.0                     # dt = 10s for AIS pipeline
-    VP_BETA_START = 0.0001
-    VP_BETA_END = 0.02
-    LR = 5e-4                     # Learning rate from paper
-    WEIGHT_DECAY = 0.01           # Weight decay from paper
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -75,194 +79,153 @@ def main():
         max_polylines=MAX_POLYLINES,
     )
 
-    # 2. Build Model Pipeline
-    scene_encoder = SceneContextEncoder(
-        hist_steps=OBS_FRAMES,
-        map_points=20,
-        feature_dim=FEATURE_DIM,
-        map_feature_dim=2,
-        embed_dim=EMBED_DIM,
-        num_heads=4,
-    ).to(device)
-
-    dit_model = AISDiffusionTransformer(
-        pred_frames=PRED_FRAMES,
-        feature_dim=TARGET_DIM,  # 4D velocity: [vx, vy, theta, yaw_rate]
-        embed_dim=EMBED_DIM,
-        num_layers=6,            # 6 layers as per paper (Table 6)
-        num_heads=8              # 8 heads as per paper (Table 6)
-    ).to(device)
-
-    # Use VP schedule as per paper Appendix D.4
-    diffusion = GaussianDiffusion(
-        timesteps=DIFFUSION_STEPS, 
-        beta_start=VP_BETA_START, 
-        beta_end=VP_BETA_END, 
-        schedule="vp"
+    # 2. Build Model & Diffusion SDE (matching official DP-VLA config)
+    config = DpVlaConfig(
+        with_encoder=False,      # Using lightweight context encoder for ego+agents+map
+        hidden_size=512,
+        depth=6,
+        num_heads=8,
+        num_actions=PRED_FRAMES,
+        dim_action=4,
+        dim_y=12,
+        model_type="noise",
+        kinematic_type="diff",   # Predict velocity/diff actions
     )
 
-    # 3. Optimization (AdamW with paper's hyperparameters)
+    model = DpVlaModel(config).to(device)
+
+    # Official VP SDE & Noise Schedule setup
+    alphas_cumprod = torch.cos(((torch.linspace(0, 1000, 1001) / 1000) + 0.008) / 1.008 * 3.141592653589793 * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1.0 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    betas = torch.clip(betas, 0.0001, 0.9999)
+
+    sde = NoiseScheduleVP(schedule="discrete", betas=betas)
+    time_sampler = TimeSampler(sample_method="uniform", eps=1e-3)
+    diffusion_sde = DiffusionSDE(
+        sde=sde,
+        time_sampler=time_sampler,
+        sample_order=2,
+        sample_skip_type="time_uniform",
+        sample_method="multistep",
+        denoise_to_zero=False,
+    )
+
+    # 3. Optimizer
     optimizer = torch.optim.AdamW(
-        list(scene_encoder.parameters()) + list(dit_model.parameters()),
-        lr=LR,
-        weight_decay=WEIGHT_DECAY,
+        model.parameters(),
+        lr=5e-4,
+        weight_decay=0.01,
     )
 
     print(f"Device: {device}")
     print(f"Training samples: {len(dataset)}")
     print(f"Batches per epoch: {len(loader)}")
-    print(f"HDP Configuration:")
-    print(f"  - VP noise schedule (β_start={VP_BETA_START}, β_end={VP_BETA_END})")
-    print(f"  - τ₀-prediction (direct velocity prediction)")
-    print(f"  - Hybrid loss weight ω={HYBRID_LOSS_WEIGHT}")
-    print(f"  - Detach window W={DETACH_WINDOW}")
-    print(f"  - DT={DT}s")
-    print(f"  - DPM-Solver with 6 steps for sampling")
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    print(f"Kinematic type: {config.kinematic_type}, Model type: {config.model_type}")
 
     # 4. Training Loop
     for epoch in range(EPOCHS):
-        scene_encoder.train()
-        dit_model.train()
+        model.train()
         epoch_loss = 0.0
-        epoch_vel_loss = 0.0
-        epoch_waypoint_loss = 0.0
 
         for batch in loader:
-            # Prepare Inputs
             ego_hist = batch["ego_history"].to(device, non_blocking=True)
-            # Target contains: [x, y, vx, vy, theta, yaw_rate]
             target_full = batch["ego_target"].to(device, non_blocking=True)
-            
-            # Innovation 1: Target Velocity Representation (HDP paper Section 4.2)
-            # We predict the kinematics (velocities and yaw rate)
-            target_vel = target_full[:, :, 2:6]  # [vx, vy, theta, yaw_rate]
-            target_pos = target_full[:, :, 0:2]  # [x, y] for reference
-
             agents = batch["agents_history"].to(device, non_blocking=True)
             map_lines = batch["map_lines"].to(device, non_blocking=True)
             agent_mask = batch["agent_mask"].to(device, non_blocking=True)
             map_mask = batch["map_mask"].to(device, non_blocking=True)
 
-            # Check for finite batch
-            if not torch.isfinite(ego_hist).all() or not torch.isfinite(target_full).all():
-                print("Skipping non-finite batch")
+            if not (torch.isfinite(ego_hist).all() and torch.isfinite(target_full).all()):
                 continue
 
-            # A. Encode Context
-            context = scene_encoder(
-                ego=ego_hist,
-                agents=agents,
-                map_lines=map_lines,
-                agent_mask=agent_mask,
-                map_mask=map_mask,
+            # Convert waypoints to target actions (diff/velocity representation)
+            target_actions = target_full[:, :, 2:6]  # [vx, vy, theta, yaw_rate]
+            if config.kinematic_type == "diff":
+                model_actions = waypoint_to_diff(target_actions)
+            else:
+                model_actions = target_actions
+
+            # Sample noise and timesteps via official DiffusionSDE
+            action_with_noise, t, target_dict = diffusion_sde.sample(model_actions)
+
+            # Construct proprioception conditioning (ego latest status)
+            proprio = torch.cat([
+                ego_hist[:, -1, :],
+                torch.zeros((ego_hist.shape[0], config.dim_y - 6), device=device)
+            ], dim=-1)
+
+            # Encode context
+            enc_out = model.fallback_encoder(ego_hist, agents, map_lines, agent_mask, map_mask)
+
+            # Predict noise
+            output = model(
+                action_with_noise=action_with_noise,
+                time=t,
+                proprio=proprio,
+                encoder_hidden_states=enc_out.last_hidden_state,
+                attention_mask=enc_out.attention_mask,
             )
 
-            # B. Diffusion: Add noise to velocity target
-            t = torch.randint(0, DIFFUSION_STEPS, (BATCH_SIZE,), device=device).long()
-            z_t, noise = diffusion.q_sample(target_vel, t)
+            # Supervised diffusion loss
+            loss_noise = F.mse_loss(output.prediction, target_dict["noise"])
 
-            # C. Model: Predict the clean velocity x_0 (τ₀-prediction)
-            pred_vel_0 = dit_model(z_t, t, context)
+            # Hybrid waypoint loss with detached integral if kinematic_type is diff
+            if config.kinematic_type == "diff":
+                pred_x0 = (action_with_noise - diffusion_sde.sde.marginal_std(t)[:, None, None] * output.prediction) / diffusion_sde.sde.marginal_alpha(t)[:, None, None]
+                pred_wpt = detached_integral(pred_x0[..., :2], detach_window_size=3)
+                target_wpt = torch.cumsum(model_actions[..., :2], dim=-2)
+                loss_wpt = F.mse_loss(pred_wpt, target_wpt)
+                loss = loss_noise + 0.1 * loss_wpt
+            else:
+                loss = loss_noise
 
-            # D. Compute Hybrid Loss (Algorithm 1 from Appendix D.3)
-            # Velocity loss: ||v_θ - v_0||^2
-            loss_vel = F.mse_loss(pred_vel_0, target_vel)
-            
-            # Waypoint loss with detached integral
-            # Only use [vx, vy] for waypoint integration (first 2 dims)
-            pred_vel_xy = pred_vel_0[:, :, :2]
-            target_vel_xy = target_vel[:, :, :2]
-            
-            loss_waypoint = hybrid_loss(
-                pred_vel_xy, 
-                target_vel_xy, 
-                W=DETACH_WINDOW, 
-                omega=HYBRID_LOSS_WEIGHT, 
-                dt=DT
-            ) - loss_vel  # hybrid_loss returns l_v + ω*l_wpt, so subtract l_v to get just l_wpt
-            
-            # Actually, let's compute it properly using the function
-            # hybrid_loss already includes both terms, so we use it directly
-            total_loss = hybrid_loss(
-                pred_vel_xy, 
-                target_vel_xy, 
-                W=DETACH_WINDOW, 
-                omega=HYBRID_LOSS_WEIGHT, 
-                dt=DT
-            )
-            
-            # Also compute individual components for logging
-            with torch.no_grad():
-                l_v = F.mse_loss(pred_vel_xy, target_vel_xy)
-                pred_wpt = detached_integral(pred_vel_xy, DETACH_WINDOW, DT)
-                gt_wpt = torch.cumsum(target_vel_xy, dim=1) * DT
-                l_wpt = F.mse_loss(pred_wpt, gt_wpt)
-
-            # F. Step
             optimizer.zero_grad(set_to_none=True)
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                list(scene_encoder.parameters()) + list(dit_model.parameters()), 1.0
-            )
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            
-            epoch_loss += total_loss.item()
-            epoch_vel_loss += l_v.item()
-            epoch_waypoint_loss += l_wpt.item()
+
+            epoch_loss += loss.item()
 
         avg_loss = epoch_loss / max(len(loader), 1)
-        avg_vel = epoch_vel_loss / max(len(loader), 1)
-        avg_wp = epoch_waypoint_loss / max(len(loader), 1)
-        print(f"Epoch {epoch + 1}/{EPOCHS} | total={avg_loss:.6f} | vel={avg_vel:.6f} | wp={avg_wp:.6f}")
+        print(f"Epoch {epoch + 1}/{EPOCHS} | loss={avg_loss:.6f}")
 
-        # Save checkpoint
         if (epoch + 1) % 10 == 0:
             torch.save({
                 "epoch": epoch + 1,
-                "scene_encoder": scene_encoder.state_dict(),
-                "dit_model": dit_model.state_dict(),
+                "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "loss": avg_loss,
             }, f"checkpoint_epoch_{epoch + 1}.pt")
 
     print("Training complete!")
-    
-    # Test DPM-Solver sampling
-    print("\nTesting DPM-Solver sampling...")
-    scene_encoder.eval()
-    dit_model.eval()
-    
+
+    # 5. Inference / Sampling Test via generate()
+    model.eval()
     with torch.no_grad():
-        # Get a sample batch
         batch = next(iter(loader))
-        ego_hist = batch["ego_history"].to(device, non_blocking=True)
-        agents = batch["agents_history"].to(device, non_blocking=True)
-        map_lines = batch["map_lines"].to(device, non_blocking=True)
-        agent_mask = batch["agent_mask"].to(device, non_blocking=True)
-        map_mask = batch["map_mask"].to(device, non_blocking=True)
-        
-        context = scene_encoder(
-            ego=ego_hist,
-            agents=agents,
-            map_lines=map_lines,
-            agent_mask=agent_mask,
-            map_mask=map_mask,
+        ego_hist = batch["ego_history"][:1].to(device)
+        agents = batch["agents_history"][:1].to(device)
+        map_lines = batch["map_lines"][:1].to(device)
+        agent_mask = batch["agent_mask"][:1].to(device)
+        map_mask = batch["map_mask"][:1].to(device)
+
+        proprio = torch.cat([
+            ego_hist[:, -1, :],
+            torch.zeros((1, config.dim_y - 6), device=device)
+        ], dim=-1)
+
+        enc_out = model.fallback_encoder(ego_hist, agents, map_lines, agent_mask, map_mask)
+
+        gen_actions = model.generate(
+            diffusion_sde=diffusion_sde,
+            encoder_hidden_states=enc_out.last_hidden_state,
+            proprio=proprio,
+            attention_mask=enc_out.attention_mask,
+            steps=6,
         )
-        
-        # Sample using DPM-Solver (6 steps as per paper)
-        shape = (1, PRED_FRAMES, TARGET_DIM)
-        sampled_vel = diffusion.sample(
-            dit_model, 
-            context[:1], 
-            shape, 
-            use_dpm_solver=True, 
-            steps=6
-        )
-        print(f"DPM-Solver sampled velocity shape: {sampled_vel.shape}")
-        
-        # Integrate to get waypoints
-        sampled_waypoints = torch.cumsum(sampled_vel[:, :, :2], dim=1) * DT
-        print(f"Sampled waypoints shape: {sampled_waypoints.shape}")
+        print(f"Generated actions shape (DPM-Solver): {gen_actions.shape}")
 
 
 if __name__ == "__main__":
