@@ -26,8 +26,14 @@ class AISScenarioDataset(Dataset):
         Scans all XMLs, finds moving ships, and calculates valid sliding windows.
         """
         print("Building sliding window index map...")
+        valid_file_count = 0
         for file_path in self.scenario_files:
-            scenario, _ = CommonOceanFileReader(file_path).open()
+            try:
+                scenario, _ = CommonOceanFileReader(file_path).open()
+            except Exception as e:
+                print(f"Skipping corrupted XML file {os.path.basename(file_path)}: {e}")
+                continue
+            valid_file_count += 1
             
             # Find all ships that are NOT anchored
             moving_ships = [
@@ -50,7 +56,7 @@ class AISScenarioDataset(Dataset):
                         'start_frame': start_frame
                     })
                     
-        print(f"Dataset ready: {len(self.index_map)} total tensors generated from {len(self.scenario_files)} scenarios.")
+        print(f"Dataset ready: {len(self.index_map)} total tensors generated from {valid_file_count} valid scenarios (out of {len(self.scenario_files)} files).")
 
     def __len__(self):
         return len(self.index_map)

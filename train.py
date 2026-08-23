@@ -59,7 +59,7 @@ def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
 
 
 def main():
-    SCENARIO_DIR = "/run/media/akshat/Akshat_USB/generated_scenarios3"
+    SCENARIO_DIR = "/run/media/akshat/Akshat_USB/all_scenerios"
     OBS_FRAMES = 20
     PRED_FRAMES = 20
     MAX_AGENTS = 10
