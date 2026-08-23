@@ -1,0 +1,116 @@
+{
+  "n_files": 887,
+  "n_parse_failures": 0,
+  "n_integrity_issues": 34,
+  "issues": [
+    "scenario_0484.xml: obstacles 10157&10158: bounding circles overlap at t=64 (d=29.0m)",
+    "scenario_0493.xml: obstacles 10247&10248: bounding circles overlap at t=32 (d=12.2m)",
+    "scenario_0499.xml: obstacles 10112&10113: bounding circles overlap at t=26 (d=35.2m)",
+    "scenario_0523.xml: obstacles 10064&10065: bounding circles overlap at t=33 (d=117.9m)",
+    "scenario_0532.xml: obstacles 10074&10076: bounding circles overlap at t=36 (d=34.5m)",
+    "scenario_0576.xml: obstacles 10048&10049: bounding circles overlap at t=48 (d=36.1m)",
+    "scenario_0632.xml: obstacles 10085&10086: bounding circles overlap at t=32 (d=28.8m)",
+    "scenario_0649.xml: obstacles 10068&10069: bounding circles overlap at t=64 (d=44.1m)",
+    "scenario_0656.xml: obstacles 10084&10090: bounding circles overlap at t=32 (d=55.4m)",
+    "scenario_0677.xml: obstacles 10132&10137: bounding circles overlap at t=44 (d=65.6m)",
+    "scenario_0681.xml: obstacles 10139&10141: bounding circles overlap at t=44 (d=23.0m)",
+    "scenario_0690.xml: obstacles 10087&10088: bounding circles overlap at t=32 (d=49.1m)",
+    "scenario_0699.xml: obstacles 10077&10083: bounding circles overlap at t=29 (d=28.6m)",
+    "scenario_0701.xml: obstacles 10089&10092: bounding circles overlap at t=27 (d=40.3m)",
+    "scenario_0779.xml: obstacles 10076&10078: bounding circles overlap at t=42 (d=10.5m)",
+    "scenario_0782.xml: obstacles 10099&10102: bounding circles overlap at t=42 (d=49.8m)",
+    "scenario_0802.xml: obstacles 10078&10079: bounding circles overlap at t=46 (d=208.7m)",
+    "scenario_0807.xml: obstacles 10097&10103: bounding circles overlap at t=64 (d=46.1m)",
+    "scenario_0807.xml: obstacles 10102&10106: bounding circles overlap at t=48 (d=132.7m)",
+    "scenario_0812.xml: obstacles 10084&10087: bounding circles overlap at t=64 (d=31.3m)",
+    "scenario_0812.xml: obstacles 10085&10092: bounding circles overlap at t=64 (d=33.0m)",
+    "scenario_0814.xml: obstacles 10096&10097: bounding circles overlap at t=64 (d=73.8m)",
+    "scenario_0836.xml: obstacles 10023&10024: bounding circles overlap at t=64 (d=15.9m)",
+    "scenario_0839.xml: obstacle 10086: frame 1 implied speed 0.1 m/s vs stored 5.9 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 2 implied speed 0.1 m/s vs stored 5.6 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 3 implied speed 0.1 m/s vs stored 5.4 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 4 implied speed 0.1 m/s vs stored 5.1 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 5 implied speed 0.1 m/s vs stored 4.8 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 6 implied speed 0.1 m/s vs stored 4.6 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 7 implied speed 0.1 m/s vs stored 4.3 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 8 implied speed 0.1 m/s vs stored 4.0 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 9 implied speed 0.1 m/s vs stored 3.7 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 10 implied speed 0.1 m/s vs stored 3.5 m/s -- possible resampling artifact",
+    "scenario_0839.xml: obstacle 10086: frame 11 implied speed 0.1 m/s vs stored 3.2 m/s -- possible resampling artifact"
+  ],
+  "adequacy": {
+    "n_scenarios": 887,
+    "n_trajectories": 6084,
+    "agents_per_scenario": {
+      "mean": 6.859075535512965,
+      "min": 2,
+      "max": 12
+    },
+    "trajectory_length_frames": {
+      "mean": 20.0,
+      "p5": 20.0,
+      "p50": 20.0,
+      "p95": 20.0
+    },
+    "obstacle_type_counts": {
+      "motorvessel": 1609,
+      "anchoredvessel": 3021,
+      "cargoship": 1454
+    },
+    "speed_ms": {
+      "mean": 2.0407088906715596,
+      "p50": 0.29723466654807584,
+      "p95": 6.5694886569649675
+    },
+    "pct_maneuvering_frames": 0.0,
+    "encounter_type_counts": {
+      "other": 224,
+      "crossing": 219,
+      "overtaking": 125,
+      "head_on": 73
+    }
+  },
+  "constant_velocity_baseline": {
+    "constant_velocity_ADE_m": 14.838089781285394,
+    "constant_velocity_FDE_m": 26.978353034915322,
+    "n_trajectories_evaluated": 6084
+  },
+  "normalization_stats": {
+    "x": {
+      "mean": 48.02717659434582,
+      "std": 2419.034804596374,
+      "min": -7125.1125,
+      "max": 7980.9608
+    },
+    "y": {
+      "mean": 375.1971372024983,
+      "std": 2188.049045334178,
+      "min": -6070.4081,
+      "max": 6652.0433
+    },
+    "orientation": {
+      "mean": 3.085673773011177,
+      "std": 1.9057205292784782,
+      "min": 0.0,
+      "max": 6.2831
+    },
+    "velocity": {
+      "mean": 1.995250831689678,
+      "std": 2.438785313659669,
+      "min": -3.8909,
+      "max": 9.5983
+    },
+    "velocity_y": {
+      "mean": -0.01045201594345825,
+      "std": 0.28274515941793343,
+      "min": -6.0837,
+      "max": 4.5886
+    },
+    "yaw_rate": {
+      "mean": 2.5624589086127552e-05,
+      "std": 0.0010778578914748338,
+      "min": -0.0138,
+      "max": 0.0134
+    }
+  }
+}
