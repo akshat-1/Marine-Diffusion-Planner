@@ -33,6 +33,43 @@ def hybrid_loss(pred_actions: torch.Tensor, target_actions: torch.Tensor, W: int
     return l_action + omega * l_wpt
 
 
+def reward_weighted_diffusion_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    rewards: torch.Tensor,
+    beta: float = 1.0,
+    W: int = 3,
+    omega: float = 0.1,
+) -> torch.Tensor:
+    """Official reward-weighted diffusion loss for HDP RL posttraining (DpVlaRlAgent).
+
+    Computes group-normalized exponential reward weights:
+        weight = exp(beta * (r - mean) / (std + 1e-6))
+    and applies them to the per-sample loss.
+    """
+    # Group-relative normalization if 2D (B, G), or standard normalization if 1D (B*G)
+    if rewards.dim() == 2:
+        r_norm = (rewards - rewards.mean(dim=1, keepdim=True)) / (rewards.std(dim=1, keepdim=True) + 1e-6)
+        r_norm = r_norm.reshape(-1)
+    else:
+        r_norm = (rewards - rewards.mean()) / (rewards.std() + 1e-6)
+
+    weights = torch.exp(beta * r_norm).detach()
+
+    # Per-sample MSE
+    per_sample_mse = F.mse_loss(pred, target, reduction="none").mean(dim=[-1, -2])
+
+    if W > 0 and omega > 0:
+        pred_wpt = detached_integral(pred[..., :2], detach_window_size=W)
+        target_wpt = torch.cumsum(target[..., :2], dim=-2)
+        per_sample_wpt = F.mse_loss(pred_wpt, target_wpt, reduction="none").mean(dim=[-1, -2])
+        per_sample_loss = per_sample_mse + omega * per_sample_wpt
+    else:
+        per_sample_loss = per_sample_mse
+
+    return (weights * per_sample_loss).mean()
+
+
 __all__ = [
     "DPM_Solver",
     "NoiseScheduleVP",
@@ -41,4 +78,5 @@ __all__ = [
     "TimeSampler",
     "detached_integral",
     "hybrid_loss",
+    "reward_weighted_diffusion_loss",
 ]

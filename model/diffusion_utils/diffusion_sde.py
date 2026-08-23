@@ -33,13 +33,18 @@ class DiffusionSDE:
             **dpm_solver_params
         )
 
+        order = self.sample_params.get('sample_order', 2)
+        skip_type = self.sample_params.get('sample_skip_type', 'time_uniform')
+        method = self.sample_params.get('sample_method', 'multistep')
+        denoise_to_zero = self.sample_params.get('denoise_to_zero', False)
+
         return dpm_solver.sample(
             x_init,
             steps=sample_steps,
-            order=self.sample_params['sample_order'],
-            skip_type=self.sample_params['sample_skip_type'],
-            method=self.sample_params['sample_method'],
-            denoise_to_zero=self.sample_params['denoise_to_zero']
+            order=order,
+            skip_type=skip_type,
+            method=method,
+            denoise_to_zero=denoise_to_zero
         )
 
 
