@@ -141,7 +141,9 @@ class HighCapacityVectorSceneEncoder(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.agent_temporal_transformer = nn.TransformerEncoder(agent_temporal_layer, num_layers=2)
+        self.agent_temporal_transformer = nn.TransformerEncoder(
+            agent_temporal_layer, num_layers=2, enable_nested_tensor=False
+        )
         self.agent_temporal_pool = nn.AdaptiveAvgPool1d(4)
 
         # --- 3. Map Polyline Sub-Encoder ---
@@ -160,7 +162,9 @@ class HighCapacityVectorSceneEncoder(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.map_point_transformer = nn.TransformerEncoder(map_point_layer, num_layers=2)
+        self.map_point_transformer = nn.TransformerEncoder(
+            map_point_layer, num_layers=2, enable_nested_tensor=False
+        )
         self.map_point_pool = nn.AdaptiveAvgPool1d(4)
 
         # --- 4. Modality / Type Embeddings ---
@@ -177,7 +181,9 @@ class HighCapacityVectorSceneEncoder(nn.Module):
             batch_first=True,
             norm_first=True,
         )
-        self.scene_transformer = nn.TransformerEncoder(scene_layer, num_layers=num_layers)
+        self.scene_transformer = nn.TransformerEncoder(
+            scene_layer, num_layers=num_layers, enable_nested_tensor=False
+        )
         self.norm = nn.LayerNorm(hidden_size)
 
         self._init_weights()
