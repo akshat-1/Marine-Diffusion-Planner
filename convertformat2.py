@@ -136,7 +136,7 @@ def format_noaa_dataset(input_csv, output_zst="AISFiles/canal_ais.csv.zst"):
 if __name__ == "__main__":
     local_output = "AISFiles/canal_ais.csv.zst"
     format_noaa_dataset(
-        "/run/media/akshat/Akshat_USB/AIS_178714851083476441_3981-1787165671726.csv", 
+        "/run/media/akshat/Akshat_USB/AISData/data/Los Angeles_anonymized.csv", 
         local_output
     )
     # Ensure flush to disk

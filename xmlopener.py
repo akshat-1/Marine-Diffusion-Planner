@@ -7,7 +7,7 @@ from commonocean.visualization.draw_dispatch_cr import draw_object
 from matplotlib.widgets import Button
 
 # Load the scenario file
-file_path = "/run/media/akshat/Akshat_USB/generated_scenarios4/scenario_0101.xml"
+file_path = "/run/media/akshat/Akshat_USB/generated_scenarios/scenario_0005.xml"
 scenario, planning_problem_set = CommonOceanFileReader(file_path).open()
 
 # Automatically find the last timestep available

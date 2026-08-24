@@ -124,8 +124,26 @@ def main():
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     print(f"Kinematic type: {config.kinematic_type}, Model type: {config.model_type}")
 
-    # 4. Training Loop
-    for epoch in range(EPOCHS):
+    start_epoch = 0
+    checkpoint_path = "weight/checkpoint_epoch_10.pt"  # Set to None or empty string to train from scratch
+
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"Loading checkpoint from '{checkpoint_path}'...")
+        # map_location=device prevents GPU/CPU memory conflicts if hardware changed
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        
+        start_epoch = checkpoint["epoch"]
+        # Use .get() to prevent crashes if an older checkpoint didn't save 'loss'
+        previous_loss = checkpoint.get("loss", "Unknown")
+        
+        print(f"Resuming training from epoch {start_epoch} with previous loss: {previous_loss}")
+    else:
+        print("No valid checkpoint found. Starting training from scratch (Epoch 0).")
+
+    for epoch in range(start_epoch, EPOCHS):
         model.train()
         epoch_loss = 0.0
 
@@ -141,9 +159,9 @@ def main():
                 continue
 
             # Convert waypoints to target actions (diff/velocity representation)
-            target_actions = target_full[:, :, 2:6]  # [vx, vy, theta, yaw_rate]
+            target_actions = target_full[:, :, 2:6]  # [vx, vy, theta, yaw_rate] ignores the position
             if config.kinematic_type == "diff":
-                model_actions = waypoint_to_diff(target_actions)
+                model_actions = waypoint_to_diff(target_actions) # [delta_vx, delta_vy, theta, yaw_rate]
             else:
                 model_actions = target_actions
 
@@ -192,41 +210,17 @@ def main():
         print(f"Epoch {epoch + 1}/{EPOCHS} | loss={avg_loss:.6f}")
 
         if (epoch + 1) % 10 == 0:
+            os.makedirs("weight", exist_ok=True)
             torch.save({
                 "epoch": epoch + 1,
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "loss": avg_loss,
-            }, f"checkpoint_epoch_{epoch + 1}.pt")
+            }, f"weight/checkpoint_epoch_{epoch + 1}.pt")
 
     print("Training complete!")
 
-    # 5. Inference / Sampling Test via generate()
-    model.eval()
-    with torch.no_grad():
-        batch = next(iter(loader))
-        ego_hist = batch["ego_history"][:1].to(device)
-        agents = batch["agents_history"][:1].to(device)
-        map_lines = batch["map_lines"][:1].to(device)
-        agent_mask = batch["agent_mask"][:1].to(device)
-        map_mask = batch["map_mask"][:1].to(device)
-
-        proprio = torch.cat([
-            ego_hist[:, -1, :],
-            torch.zeros((1, config.dim_y - 6), device=device)
-        ], dim=-1)
-
-        enc_out = model.fallback_encoder(ego_hist, agents, map_lines, agent_mask, map_mask)
-
-        gen_actions = model.generate(
-            diffusion_sde=diffusion_sde,
-            encoder_hidden_states=enc_out.last_hidden_state,
-            proprio=proprio,
-            attention_mask=enc_out.attention_mask,
-            steps=6,
-        )
-        print(f"Generated actions shape (DPM-Solver): {gen_actions.shape}")
-
+    
 
 if __name__ == "__main__":
     main()

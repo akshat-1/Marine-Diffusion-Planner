@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import sys
 
-def format_mendeley_dataset(input_csv, output_zst="singapore_ais.csv.zst"):
+def format_mendeley_dataset(input_csv, output_zst="LA_ais.csv.zst"):
     print(f"Loading {input_csv}...")
     
     # We only load the columns we actually need to save RAM
@@ -49,4 +49,4 @@ def format_mendeley_dataset(input_csv, output_zst="singapore_ais.csv.zst"):
 
 if __name__ == "__main__":
     # Change "Mendeley_Singapore.csv" to whatever your downloaded file is named
-    format_mendeley_dataset("AISData/data/Singapore_anonymized.csv", "AISFiles/singapore_ais.csv.zst")
+    format_mendeley_dataset("/run/media/akshat/Akshat_USB/AISData/data/Los_Angeles_anonymized.csv", "/run/media/akshat/Akshat_USB/LA_ais.csv.zst")

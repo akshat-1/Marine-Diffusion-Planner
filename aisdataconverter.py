@@ -520,7 +520,7 @@ def _log_summary(stats):
 # ---------------------------------------------------------------------------
 # Main Pipeline Engine
 # ---------------------------------------------------------------------------
-def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat_USB/generated_scenarios",
+def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat_USB/generated_scenarios_LA",
                                sampling_strategy="density_first", max_windows=None, manifest_path="manifest.jsonl",
                                seed=42):
     import random
@@ -1061,4 +1061,4 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
     return stats
 
 if __name__ == "__main__":
-    generate_dataset_from_ais("/run/media/akshat/Akshat_USB/AISFiles/canal_ais.csv.zst", sampling_strategy="density_first")
+    generate_dataset_from_ais("/run/media/akshat/Akshat_USB/AISFiles/LA_ais.csv.zst", sampling_strategy="density_first")
