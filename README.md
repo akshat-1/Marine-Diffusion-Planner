@@ -8,3 +8,5 @@
 ## Model Architecture
 ![Architecture](train.svg)
 ![dp_vla](dp_vla.svg)
+![CustomDiT](CustomDiT.svg)
+![MlpBlock](MlpBlock.svg)
