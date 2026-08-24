@@ -1,4 +1,5 @@
 # Marine-Diffusion-Planner
+An implementation of Hyper Diffusion Planner (https://arxiv.org/html/2602.22801v1) for marine vehicles
 
 ## Table of Contents
 
