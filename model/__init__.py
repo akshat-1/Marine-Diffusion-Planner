@@ -3,7 +3,7 @@
 from .configuration_dp_vla import DpVlaConfig, DEFAULT_MODEL_CONFIG
 from .dit.decoder import CustomDiT
 from .dit.DiT import DiTBlock, FinalLayer, TimestepEmbedder, CustomCrossAttention
-from .modeling_dp_vla import DpVlaModel, DpVlaModelOutput, DpVlaEncoderOutput, LightweightContextEncoder
+from .modeling_dp_vla import DpVlaModel, DpVlaModelOutput, DpVlaEncoderOutput, LightweightContextEncoder, HighCapacityVectorSceneEncoder
 from .diffusion_utils.diffusion_sde import DiffusionSDE, TimeSampler
 from .diffusion_utils.dpm_solver_pytorch import DPM_Solver, NoiseScheduleVP, model_wrapper
 
@@ -19,6 +19,7 @@ __all__ = [
     "DpVlaModelOutput",
     "DpVlaEncoderOutput",
     "LightweightContextEncoder",
+    "HighCapacityVectorSceneEncoder",
     "DiffusionSDE",
     "TimeSampler",
     "DPM_Solver",
