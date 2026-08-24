@@ -7,4 +7,4 @@
 
 ## Model Architecture
 ![Architecture](train.svg)
-![dp_vla](dp_vla.svg.svg)
+![dp_vla](dp_vla.svg)
