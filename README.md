@@ -6,5 +6,5 @@
 
 
 ## Model Architecture
-![Architecture](teain.svg)
-![dp_vla](modeling_dp_vla.svg)
+![Architecture](train.svg)
+![dp_vla](dp_vla.svg.svg)
