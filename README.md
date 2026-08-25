@@ -11,3 +11,4 @@ An implementation of Hyper Diffusion Planner (https://arxiv.org/html/2602.22801v
 ![dp_vla](dp_vla.svg)
 ![CustomDiT](CustomDiT.svg)
 ![MlpBlock](MlpBlock.svg)
+![Scene_encoder](scene_encoder.svg)
