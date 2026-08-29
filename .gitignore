@@ -9,3 +9,4 @@ report.json
 manifest.jsonl
 audit_ckpt.pt
 dp_vla_workflow.pt
+Local_Temp_Data/

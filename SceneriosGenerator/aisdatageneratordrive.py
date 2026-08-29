@@ -1,13 +1,19 @@
 import os
+import sys
 import json
 import logging
+import glob
+import gc
+import zipfile
+import gdown
 from collections import Counter, defaultdict
 
 import numpy as np
 import pandas as pd
-import requests
+import geopandas as gpd
 from pyproj import Transformer
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
+from shapely.strtree import STRtree
 from scipy.spatial import cKDTree
 
 from commonocean.scenario.scenario import Scenario, Tag
@@ -20,17 +26,27 @@ from commonocean.scenario.state import InitialState, TFState
 from commonroad.geometry.shape import Rectangle, Polygon as CRPolygon
 from commonroad.planning.planning_problem import PlanningProblemSet
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+# Force local terminal to print logs
+for handler in logging.root.handlers[:]:
+    logging.root.removeHandler(handler)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
 log = logging.getLogger("ais_pipeline")
 
+# Try importing Colab Drive module
+try:
+    from google.colab import drive
+    IN_COLAB = True
+except ImportError:
+    IN_COLAB = False
+
 # ---------------------------------------------------------------------------
-# Tunables
+# Tunables & Constants
 # ---------------------------------------------------------------------------
-MIN_DISPLACEMENT_METERS = 50.0   # A ship MUST physically travel at least 50 meters from start to finish
+MIN_DISPLACEMENT_METERS = 50.0   
 DT_SECONDS = 10.0
 WINDOW_MINUTES = 20
 WINDOW_STEP_MINUTES = 5
-MAX_GAP_BINS = 45                 # Bridges 7.5-minute radio gaps
+MAX_GAP_BINS = 45                 
 MIN_TRAJECTORY_LEN = 61
 TARGET_FRAMES = 61          
 MAX_SCENE_RADIUS_M = 8000.0       
@@ -45,33 +61,18 @@ SAFE_CPA_METERS = 15.0
 
 MAX_SCENARIOS_PER_GRID_CELL = 100
 
-# --- MANEUVER FILTER TUNABLES ---
 MIN_TURN_DEG_PER_SCENE = 10.0     
 MIN_DYNAMIC_SPEED_KNOTS = 2.0     
 
-# --- LARGE SHIP / EGO PRIORITIZATION ---
-LARGE_SHIP_LENGTH_M = 100.0           # Cargo/tanker threshold (lowered from 120)
-CARGO_SPEED_KNOTS = 3.0               # Realistic cargo transit speed (lowered from 5)
-TARGET_LARGE_MOVERS_PER_SCENE = 1     # Minimum large movers per scenario (lowered from 2)
-EGO_LARGE_TARGET_RATIO = 0.6          # Target fraction of scenarios with large ego
-# --- MIXED SAMPLING ---
-SAMPLING_MODE = "mixed"               # "strict" | "relaxed" | "mixed"
-STRICT_SAMPLING_RATIO = 0.80          # In mixed mode, 80% strict / 20% relaxed for diversity without overfiting
-# ------------------------------------
+LARGE_SHIP_LENGTH_M = 100.0           
+CARGO_SPEED_KNOTS = 3.0               
+TARGET_LARGE_MOVERS_PER_SCENE = 1     
+EGO_LARGE_TARGET_RATIO = 0.6          
 
-# --- NEW: Per-scenario coastline config ---
-COASTLINE_CACHE_DIR = "coastline_cache"
-COASTLINE_PER_SCENARIO = True          # Fetch per-scenario (fast, reliable) vs one-time global
-COASTLINE_BBOX_DEG = 0.1               # BBox around anchor (0.1° ≈ 11km)
-COASTLINE_TIMEOUT = 30                 # Seconds per request (increased from 15)
-COASTLINE_MAX_RETRIES = 5              # Max retries (increased from 2)
+SAMPLING_MODE = "mixed"               
+STRICT_SAMPLING_RATIO = 0.80          
 
-# --- OFFLINE COASTLINE CONFIG ---
-OFFLINE_COASTLINE_DIR = "/run/media/akshat/Akshat_USB/coastline_offline"  # Path to preloaded coastline data
-OFFLINE_COASTLINE_FILE = "coastlines_10m_29.68_-95.29_29.78_-94.98.json"  # Specific file for Houston area
-USE_OFFLINE_COASTLINES = True          # Set True to use preloaded data, False for API
-
-BATHYMETRY_NPZ_PATH = "bathymetry/Singaporebathymetry.npz"
+BATHYMETRY_NPZ_PATH = None 
 SHALLOW_SAFETY_MARGIN_M = 2.0
 
 EXCLUSION_ZONES = []
@@ -109,7 +110,7 @@ def apply_exclusion_zones(df):
         mask |= in_zone
     dropped = mask.sum()
     if dropped > 0:
-        log.info("Excluding %d rows (%.2f%%) inside EXCLUSION_ZONES before anchor selection.", dropped, (dropped/len(df))*100)
+        log.info("Excluding %d rows (%.2f%%) inside EXCLUSION_ZONES.", dropped, (dropped/len(df))*100)
     return df[~mask].reset_index(drop=True)
 
 def is_in_exclusion_zone(lat, lon):
@@ -118,224 +119,12 @@ def is_in_exclusion_zone(lat, lon):
             return True
     return False
 
-# --- Multiple Overpass API endpoints for failover ---
-OVERPASS_ENDPOINTS = [
-    "https://overpass-api.de/api/interpreter",           # Main (Germany)
-    "https://overpass.kumi.systems/api/interpreter",     # Kumi Systems (Japan)
-    "https://overpass.openstreetmap.ru/api/interpreter", # Russia
-    "https://overpass-api.mandel.io/api/interpreter",    # Mandel (UK)
-    "https://overpass-api.tokyo.cloud/api/interpreter",  # Tokyo
-]
-
-def _fetch_overpass_tile(min_lat, min_lon, max_lat, max_lon, timeout):
-    overpass_query = f"""
-    [out:json][timeout:{int(timeout)}];
-    (way["natural"="coastline"]({min_lat},{min_lon},{max_lat},{max_lon}););
-    out geom;
-    """
-    
-    # Try each endpoint in order until one succeeds
-    last_exception = None
-    for i, endpoint in enumerate(OVERPASS_ENDPOINTS):
-        try:
-            response = requests.get(endpoint, params={'data': overpass_query},
-                                     headers={'User-Agent': 'ML-Pipeline/1.0'}, timeout=timeout)
-            response.raise_for_status()
-            elements = response.json().get('elements', [])
-            if i > 0:
-                log.info("Coastline fetch succeeded via fallback endpoint #%d: %s", i + 1, endpoint)
-            return [[(node['lon'], node['lat']) for node in el['geometry']]
-                    for el in elements if 'geometry' in el]
-        except requests.RequestException as exc:
-            last_exception = exc
-            log.debug("Overpass endpoint %d (%s) failed: %s", i + 1, endpoint, exc)
-            continue
-    
-    # All endpoints failed
-    raise last_exception or RuntimeError("All Overpass endpoints failed")
-
-def coastlines_near(all_coastlines, min_lat, min_lon, max_lat, max_lon):
-    out = []
-    for line in all_coastlines:
-        lons = [p[0] for p in line]
-        lats = [p[1] for p in line]
-        if max(lons) < min_lon or min(lons) > max_lon or max(lats) < min_lat or min(lats) > max_lat:
-            continue
-        out.append(line)
-    return out
-
-# --- OFFLINE: Load preloaded coastline data from USB ---
-_offline_coastlines_cache = None
-
-def load_offline_coastlines():
-    """Load preloaded coastline data from USB drive (runs once, caches in memory)."""
-    global _offline_coastlines_cache
-    if _offline_coastlines_cache is not None:
-        return _offline_coastlines_cache
-    
-    offline_path = os.path.join(OFFLINE_COASTLINE_DIR, OFFLINE_COASTLINE_FILE)
-    if not os.path.exists(offline_path):
-        log.warning("Offline coastline file not found: %s", offline_path)
-        _offline_coastlines_cache = []
-        return []
-    
-    try:
-        with open(offline_path) as f:
-            _offline_coastlines_cache = json.load(f)
-        log.info("Loaded %d offline coastline segments from %s", len(_offline_coastlines_cache), offline_path)
-        return _offline_coastlines_cache
-    except Exception as exc:
-        log.error("Failed to load offline coastlines: %s", exc)
-        _offline_coastlines_cache = []
-        return []
-
-# --- NEW: Fast, reliable per-scenario coastline fetching ---
-def fetch_coastlines_for_scenario(anchor_lat, anchor_lon, bbox_deg=COASTLINE_BBOX_DEG,
-                                   cache_dir=COASTLINE_CACHE_DIR, timeout=COASTLINE_TIMEOUT,
-                                   max_retries=COASTLINE_MAX_RETRIES, stats=None):
-    """
-    Fetch coastlines for a single scenario's bounding box.
-    Uses offline preloaded data if USE_OFFLINE_COASTLINES=True, otherwise Overpass API.
-    Returns [] on failure (never crashes pipeline).
-    """
-    
-    # --- OFFLINE MODE: Use preloaded coastline data ---
-    if USE_OFFLINE_COASTLINES:
-        all_offline = load_offline_coastlines()
-        if all_offline:
-            # Filter offline data to scenario bbox
-            min_lat = anchor_lat - bbox_deg
-            min_lon = anchor_lon - bbox_deg
-            max_lat = anchor_lat + bbox_deg
-            max_lon = anchor_lon + bbox_deg
-            coastlines = coastlines_near(all_offline, min_lat, min_lon, max_lat, max_lon)
-            if stats is not None:
-                stats['coastlines_cached'] += 1
-            return coastlines
-        else:
-            log.warning("Offline coastline data empty, falling back to API")
-    
-    # --- ONLINE MODE: Original API fetching with caching ---
-    os.makedirs(cache_dir, exist_ok=True)
-    
-    # Cache key: rounded anchor coordinates (deterministic, ~1km resolution)
-    cache_key = (round(anchor_lat, 2), round(anchor_lon, 2))
-    cache_file = os.path.join(cache_dir, f"scenario_{cache_key[0]:.2f}_{cache_key[1]:.2f}.json")
-    
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file) as f:
-                if stats is not None:
-                    stats['coastlines_cached'] += 1
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            pass  # Corrupted cache, re-fetch
-    
-    min_lat = anchor_lat - bbox_deg
-    min_lon = anchor_lon - bbox_deg
-    max_lat = anchor_lat + bbox_deg
-    max_lon = anchor_lon + bbox_deg
-    
-    for attempt in range(max_retries + 1):
-        try:
-            coastlines = _fetch_overpass_tile(min_lat, min_lon, max_lat, max_lon, timeout)
-            # Save to cache
-            with open(cache_file, 'w') as f:
-                json.dump(coastlines, f)
-            if stats is not None:
-                stats['coastlines_fetched'] += 1
-            return coastlines
-        except requests.Timeout:
-            if attempt < max_retries:
-                log.debug("Coastline fetch timeout for (%.2f, %.2f), retry %d/%d", 
-                          anchor_lat, anchor_lon, attempt + 1, max_retries)
-                continue
-            log.warning("Coastline fetch timeout for (%.2f, %.2f) after %d retries", 
-                        anchor_lat, anchor_lon, max_retries)
-        except requests.RequestException as exc:
-            log.warning("Coastline fetch failed for (%.2f, %.2f): %s", 
-                        anchor_lat, anchor_lon, exc)
-            break
-        except Exception as exc:
-            log.warning("Unexpected error fetching coastlines for (%.2f, %.2f): %s", 
-                        anchor_lat, anchor_lon, exc)
-            break
-    
-    return []  # Never crash, return empty list on failure
-
-# ---------------------------------------------------------------------------
-# Bathymetry / Shallow Water Engine
-# ---------------------------------------------------------------------------
-class BathymetryGrid:
-    def __init__(self, npz_path):
-        data = np.load(npz_path)
-        self.depth = data['depth']
-        self.lat0 = float(data['lat0'])
-        self.lon0 = float(data['lon0'])
-        self.dlat = float(data['dlat'])
-        self.dlon = float(data['dlon'])
-
-    def depth_at(self, lat, lon):
-        i = int(round((lat - self.lat0) / self.dlat))
-        j = int(round((lon - self.lon0) / self.dlon))
-        if 0 <= i < self.depth.shape[0] and 0 <= j < self.depth.shape[1]:
-            d = self.depth[i, j]
-            return None if np.isnan(d) else float(d)
-        return "OUT_OF_BOUNDS"
-
-    def cells_in_box(self, min_lat, min_lon, max_lat, max_lon):
-        i0 = max(0, int((min_lat - self.lat0) / self.dlat))
-        i1 = min(self.depth.shape[0], int((max_lat - self.lat0) / self.dlat) + 1)
-        j0 = max(0, int((min_lon - self.lon0) / self.dlon))
-        j1 = min(self.depth.shape[1], int((max_lon - self.lon0) / self.dlon) + 1)
-        cells = []
-        for i in range(i0, i1):
-            for j in range(j0, j1):
-                d = self.depth[i, j]
-                if not np.isnan(d):
-                    cells.append((self.lat0 + i * self.dlat, self.lon0 + j * self.dlon, float(d)))
-        return cells
-
-def add_shallow_waters(scenario, bathymetry, transformer, min_lat, min_lon, max_lat, max_lon,
-                       shallow_threshold_m, waters_id_start):
-    if bathymetry is None:
-        return waters_id_start
-    wid = waters_id_start
-    half_lat, half_lon = bathymetry.dlat / 2.0, bathymetry.dlon / 2.0
-    for lat, lon, depth in bathymetry.cells_in_box(min_lat, min_lon, max_lat, max_lon):
-        if depth >= shallow_threshold_m:
-            continue
-        corners_latlon = [(lat - half_lat, lon - half_lon), (lat - half_lat, lon + half_lon),
-                           (lat + half_lat, lon + half_lon), (lat + half_lat, lon - half_lon)]
-        pts = np.array([transformer.transform(clon, clat) for clat, clon in corners_latlon])
-        scenario.add_objects(Shallow(shape=CRPolygon(pts), waters_id=wid, depth=float(depth)))
-        wid += 1
-    return wid
-
-def check_grounding(bathymetry, lats, lons, draft_m, stats=None):
-    for lat, lon in zip(lats, lons):
-        if is_in_exclusion_zone(lat, lon):
-            return True
-            
-        if bathymetry is not None:
-            d = bathymetry.depth_at(lat, lon)
-            if d == "OUT_OF_BOUNDS":
-                if stats is not None:
-                    stats['bathymetry_out_of_bounds_points'] += 1
-                continue 
-            if d is None:
-                return True 
-            if d < draft_m:
-                return True
-    return False
-
 # ---------------------------------------------------------------------------
 # High-Performance Pure-NumPy Kinematics & Resampling
 # ---------------------------------------------------------------------------
 def fast_resample_vessel(t_sec, lats, lons, sogs, cogs, hdgs, vessel_type, length, width, draft,
                          dt_seconds=DT_SECONDS, max_gap_bins=MAX_GAP_BINS,
                          min_len=MIN_TRAJECTORY_LEN, stats=None):
-
     order = np.argsort(t_sec)
     t_sec, lats, lons, sogs, cogs, hdgs = (t_sec[order], lats[order], lons[order],
                                             sogs[order], cogs[order], hdgs[order])
@@ -354,32 +143,23 @@ def fast_resample_vessel(t_sec, lats, lons, sogs, cogs, hdgs, vessel_type, lengt
     valid = (~np.isnan(lats)) & (~np.isnan(lons)) & (~np.isnan(sogs)) & (~np.isnan(cogs)) & (~np.isnan(hdgs))
     t_sec, lats, lons, sogs, cogs, hdgs = t_sec[valid], lats[valid], lons[valid], sogs[valid], cogs[valid], hdgs[valid]
 
-    if len(t_sec) < 2:
-        if stats is not None:
-            stats['skipped_too_few_raw_rows'] += 1
-        return None
+    if len(t_sec) < 2: return None
 
     gap_limit = dt_seconds * (max_gap_bins + 1.5)
     gaps = np.diff(t_sec)
     split_indices = np.where(gaps > gap_limit)[0] + 1
     segments = np.split(np.arange(len(t_sec)), split_indices)
     best_seg = max(segments, key=len)
-    
-    if len(best_seg) < 2:
-        if stats is not None:
-            stats['skipped_too_few_raw_rows'] += 1
-        return None
+
+    if len(best_seg) < 2: return None
 
     t_sec, lats, lons, sogs, cogs, hdgs = (t_sec[best_seg], lats[best_seg], lons[best_seg],
                                             sogs[best_seg], cogs[best_seg], hdgs[best_seg])
 
     t_start = np.ceil(t_sec[0] / dt_seconds) * dt_seconds
     t_end = np.floor(t_sec[-1] / dt_seconds) * dt_seconds
-    if t_end < t_start:
-        if stats is not None:
-            stats['skipped_too_few_after_resample'] += 1
-        return None
-        
+    if t_end < t_start: return None
+
     t_grid = np.arange(t_start, t_end + (dt_seconds / 2.0), dt_seconds)
 
     gap_cap_seconds = dt_seconds * max_gap_bins
@@ -393,17 +173,11 @@ def fast_resample_vessel(t_sec, lats, lons, sogs, cogs, hdgs, vessel_type, lengt
         change = np.diff(padded)
         starts = np.where(change == 1)[0]
         ends = np.where(change == -1)[0]
-        if len(starts) == 0:
-            if stats is not None:
-                stats['skipped_too_few_after_resample'] += 1
-            return None
+        if len(starts) == 0: return None
         best = np.argmax(ends - starts)
         t_grid = t_grid[starts[best]:ends[best]]
 
-    if len(t_grid) < min_len:
-        if stats is not None:
-            stats['skipped_too_few_after_resample'] += 1
-        return None
+    if len(t_grid) < min_len: return None
 
     hdg_unwrapped = np.unwrap(np.deg2rad(hdgs))
     cog_unwrapped = np.unwrap(np.deg2rad(cogs))
@@ -421,15 +195,10 @@ def fast_resample_vessel(t_sec, lats, lons, sogs, cogs, hdgs, vessel_type, lengt
     interp_hdg = np.rad2deg(interp_hdg_unwrapped) % 360.0
     interp_cog = np.rad2deg(interp_cog_unwrapped) % 360.0
 
-    # Derive velocity strictly from xy deltas
     dx = np.diff(interp_lon) * 111000.0 * np.cos(np.deg2rad(np.mean(interp_lat)))
     dy = np.diff(interp_lat) * 111000.0
     derived_sog_ms = np.hypot(dx, dy) / dt_seconds
-    
-    if len(derived_sog_ms) > 0:
-        sog_ms = np.append(derived_sog_ms, derived_sog_ms[-1])
-    else:
-        sog_ms = np.zeros(len(t_grid))
+    sog_ms = np.append(derived_sog_ms, derived_sog_ms[-1]) if len(derived_sog_ms) > 0 else np.zeros(len(t_grid))
 
     yaw_rate_r = np.empty_like(interp_hdg_unwrapped)
     yaw_rate_r[1:] = np.diff(interp_hdg_unwrapped) / dt_seconds
@@ -452,100 +221,123 @@ def filter_cpa_collisions(valid_groups, safe_cpa_meters=SAFE_CPA_METERS, stats=N
     for i in range(len(mmsi_list)):
         for j in range(i + 1, len(mmsi_list)):
             m1, m2 = mmsi_list[i], mmsi_list[j]
-            if m1 in mmsis_to_drop or m2 in mmsis_to_drop:
-                continue
-                
+            if m1 in mmsis_to_drop or m2 in mmsis_to_drop: continue
+
             d1, d2 = valid_groups[m1], valid_groups[m2]
-            
             common_times, idx1, idx2 = np.intersect1d(d1['t_sec'], d2['t_sec'], return_indices=True)
-            if len(common_times) < 2:
-                continue
-                
+            if len(common_times) < 2: continue
+
             lat1, lon1 = d1['latitude'][idx1], d1['longitude'][idx1]
             lat2, lon2 = d2['latitude'][idx2], d2['longitude'][idx2]
-            
+
             dx = (lon1 - lon2) * 111000.0 * np.cos(np.deg2rad(np.mean(lat1)))
             dy = (lat1 - lat2) * 111000.0
             actual_distances = np.hypot(dx, dy)
-            
+
             hull_buffer = (d1['length'] + d2['length']) / 2.0
             actual_threshold = max(safe_cpa_meters, hull_buffer)
-            
+
             if np.any(actual_distances < actual_threshold):
-                # Never drop anchor
                 if anchor_mmsi is not None and (m1 == anchor_mmsi or m2 == anchor_mmsi):
-                    # Drop the other ship instead
                     dropped = m2 if m1 == anchor_mmsi else m1
                 else:
                     dropped = m2 if d1['length'] > d2['length'] else m1
                 mmsis_to_drop.add(dropped)
-                if stats is not None:
-                    stats['cpa_collisions_removed'] += 1
-                    
-    for m in mmsis_to_drop:
-        del valid_groups[m]
+                if stats is not None: stats['cpa_collisions_removed'] += 1
+
+    for m in mmsis_to_drop: del valid_groups[m]
     return valid_groups
 
 def _log_summary(stats):
-    log.info("----- pipeline summary -----")
-    for key in ['rows_excluded_zone', 'windows_seen', 'anchors_considered', 'skipped_anchor_reused',
-                'skipped_location_overused', 'skipped_anchor_too_few_rows', 'skipped_too_few_raw_rows', 
-                'skipped_temporal_desync', # <-- NEW: Tracks ships dropped due to misaligned timestamps
-                'boxes_downsampled', 'skipped_too_few_after_resample', 'cpa_collisions_removed',
-                'skipped_too_few_after_collision_filter', 'skipped_anchor_dropped_by_cpa',
-                'skipped_due_to_grounding', 'skipped_anchor_grounded',
+    log.info("\n----- Pipeline Summary -----")
+    for key in ['windows_seen', 'anchors_considered', 'skipped_anchor_reused',
+                'skipped_location_overused', 'skipped_anchor_too_few_rows', 'skipped_too_few_raw_rows',
+                'skipped_temporal_desync', 'boxes_downsampled', 'skipped_too_few_after_resample',
+                'cpa_collisions_removed', 'skipped_too_few_after_collision_filter', 'skipped_anchor_dropped_by_cpa',
                 'skipped_boring_straight_lines', 'skipped_insufficient_large_movers',
-                'skipped_redundant_fleet', 'grounding_flags', 'bathymetry_out_of_bounds_points',
-                'scenarios_written', 'scenarios_written_moving_mode', 'scenarios_written_density_mode',
-                'coastlines_fetched', 'coastlines_cached',
-                # --- NEW: Large ship / ego stats ---
+                'skipped_redundant_fleet', 'scenarios_written',
                 'windows_skipped_insufficient_large_movers',
                 'scenarios_ego_large', 'scenarios_ego_small', 'scenarios_ego_anchored']:
         log.info("%s: %d", key, stats.get(key, 0))
-    real = stats.get('resample_real_bins', 0)
-    fab = stats.get('resample_fabricated_bins', 0)
+    real, fab = stats.get('resample_real_bins', 0), stats.get('resample_fabricated_bins', 0)
     if real + fab:
-        log.info("resampled bins that were interpolated rather than real: %.1f%% (%d of %d)",
-                  100 * fab / (real + fab), fab, real + fab)
-    # Large ship distribution summary
+        log.info("Resampled bins interpolated: %.1f%% (%d of %d)", 100 * fab / (real + fab), fab, real + fab)
     total_scenes = stats.get('scenarios_written', 0)
     if total_scenes > 0:
         log.info("Ego distribution: large=%.1f%%, small=%.1f%%, anchored=%.1f%%",
                   100*stats.get('scenarios_ego_large',0)/total_scenes,
                   100*stats.get('scenarios_ego_small',0)/total_scenes,
                   100*stats.get('scenarios_ego_anchored',0)/total_scenes)
-        log.info("Avg large movers per scene: %.1f",
-                  stats.get('large_movers_per_scene_sum',0)/total_scenes)
 
 # ---------------------------------------------------------------------------
-# Main Pipeline Engine
+# Bounding Box Extractor
 # ---------------------------------------------------------------------------
-def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat_USB/generated_scenarios_LA",
-                               sampling_strategy="density_first", max_windows=None, manifest_path="manifest.jsonl",
-                               seed=42):
+def get_bounding_box_from_ais(file_path):
+    log.info(f"Scanning {os.path.basename(file_path)} to find map boundaries...")
+    is_zst = file_path.endswith('.zst')
+    compression = 'zstd' if is_zst else None
+    dtypes = {'latitude': 'float32', 'longitude': 'float32'}
+    
+    try:
+        df = pd.read_csv(file_path, compression=compression, usecols=['latitude', 'longitude'], dtype=dtypes)
+        valid_lat = df['latitude'].between(-90, 90)
+        valid_lon = df['longitude'].between(-180, 180)
+        valid_mask = valid_lat & valid_lon
+        
+        min_lat = float(df.loc[valid_mask, 'latitude'].min())
+        max_lat = float(df.loc[valid_mask, 'latitude'].max())
+        min_lon = float(df.loc[valid_mask, 'longitude'].min())
+        max_lon = float(df.loc[valid_mask, 'longitude'].max())
+        del df 
+        
+    except MemoryError:
+        log.warning("RAM limit reached! Falling back to chunked processing...")
+        min_lat, max_lat = float('inf'), float('-inf')
+        min_lon, max_lon = float('inf'), float('-inf')
+        for chunk in pd.read_csv(file_path, compression=compression, usecols=['latitude', 'longitude'], dtype=dtypes, chunksize=5_000_000):
+            chunk = chunk.dropna()
+            c_min_lat, c_max_lat = chunk['latitude'].min(), chunk['latitude'].max()
+            c_min_lon, c_max_lon = chunk['longitude'].min(), chunk['longitude'].max()
+            if -90 <= c_min_lat < min_lat: min_lat = c_min_lat
+            if -90 <= c_max_lat <= 90 and c_max_lat > max_lat: max_lat = c_max_lat
+            if -180 <= c_min_lon < min_lon: min_lon = c_min_lon
+            if -180 <= c_max_lon <= 180 and c_max_lon > max_lon: max_lon = c_max_lon
+
+    if min_lat == float('inf') or pd.isna(min_lat):
+        raise ValueError("Could not find valid coordinates in file.")
+    return min_lat, min_lon, max_lat, max_lon
+
+# ---------------------------------------------------------------------------
+# Main Pipeline Engine (HIGH SPEED, PRE-PROCESSED COASTLINES)
+# ---------------------------------------------------------------------------
+def generate_dataset_from_ais(zst_filepath, output_dir, coastline_file,
+                              sampling_strategy="density_first", max_windows=None, manifest_path="manifest.jsonl",
+                              seed=42):
     import random
     random.seed(seed)
     np.random.seed(seed)
     os.makedirs(output_dir, exist_ok=True)
+    
     stats = Counter()
     manifest_entries = []
     location_usage = Counter()
 
     columns_to_load = ['mmsi', 'base_date_time', 'latitude', 'longitude', 'sog', 'cog',
                         'heading', 'vessel_type', 'length', 'width', 'draft']
-    df = pd.read_csv(zst_filepath, compression='zstd', usecols=columns_to_load)
+    dtypes = {
+        'mmsi': 'Int64', 'latitude': 'float64', 'longitude': 'float64', 'sog': 'float32',
+        'cog': 'float32', 'heading': 'float32', 'vessel_type': 'float32',
+        'length': 'float32', 'width': 'float32', 'draft': 'float32'
+    }
+
+    log.info(f"Loading {os.path.basename(zst_filepath)} entirely into memory (High-Speed Mode)...")
+    compression = 'zstd' if zst_filepath.endswith('.zst') else None
+    df = pd.read_csv(zst_filepath, compression=compression, usecols=columns_to_load, dtype=dtypes)
+    
     df['base_date_time'] = pd.to_datetime(df['base_date_time'])
     df = df.dropna(subset=['latitude', 'longitude'])
-
-    # Drop sentinel errors
     df = df[df['sog'] < 102.0]
     df = apply_exclusion_zones(df)
-
-    length_missing = df['length'].isna().mean()
-    width_missing = df['width'].isna().mean()
-    draft_missing = df['draft'].isna().mean()
-    log.info("Data ingested. Length missing for %.1f%%, width for %.1f%%, draft for %.1f%% (imputing to %.0fx%.0fm, %.0fm draft).",
-             100 * length_missing, 100 * width_missing, 100 * draft_missing, DEFAULT_LENGTH_M, DEFAULT_WIDTH_M, DEFAULT_DRAFT_M)
 
     df['length'] = df['length'].fillna(DEFAULT_LENGTH_M)
     df['width'] = df['width'].fillna(DEFAULT_WIDTH_M)
@@ -555,18 +347,55 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
         log.warning("No rows left after cleaning.")
         return stats
 
-    bathymetry = BathymetryGrid(BATHYMETRY_NPZ_PATH) if BATHYMETRY_NPZ_PATH else None
-    
-    # Pre-load offline coastlines if enabled (loads once, caches in memory)
-    if USE_OFFLINE_COASTLINES:
-        all_coastlines = load_offline_coastlines()
-        log.info("Offline coastline mode enabled: %d segments loaded", len(all_coastlines))
-    else:
-        # Coastline cache is now per-scenario (lazy loading), no upfront fetch needed
-        all_coastlines = []  # Kept for compatibility, not used when COASTLINE_PER_SCENARIO=True
-
+    log.info("Sorting chronological timeline...")
     df = df.sort_values('base_date_time').reset_index(drop=True)
     timestamps_sec = (df['base_date_time'].values.astype('datetime64[s]').astype(np.int64))
+
+    # -------------------------------------------------------------
+    # PRE-PROCESS COASTLINES GLOBALLY (INSTANT SCENARIO GENERATION)
+    # -------------------------------------------------------------
+    global_lat = df['latitude'].mean()
+    global_lon = df['longitude'].mean()
+    
+    global_transformer = Transformer.from_crs(
+        "epsg:4326", f"+proj=aeqd +lat_0={global_lat} +lon_0={global_lon} +units=m", always_xy=True
+    )
+    
+    global_coastline_polygons = []
+    coastline_tree = None
+
+    if coastline_file and os.path.exists(coastline_file):
+        with open(coastline_file, 'r') as f:
+            all_coastlines = json.load(f)
+            
+        log.info(f"Loaded {len(all_coastlines)} coastline segments. Pre-computing high-speed buffers...")
+        
+        # We pre-project and pre-buffer ALL coastlines once relative to the global dataset center
+        for line in all_coastlines:
+            if len(line) < 2:
+                continue
+            line_arr = np.array(line)
+            xs, ys = global_transformer.transform(line_arr[:, 0], line_arr[:, 1])
+            projected_line = LineString(np.column_stack((xs, ys)))
+            
+            # --- THE MAGIC OPTIMIZATION: resolution=2 and simplify(5.0) ---
+            # Drops vertex count by 99% without losing critical collision boundaries
+            buffered_poly = projected_line.buffer(20.0, resolution=2).simplify(5.0, preserve_topology=True)
+            
+            if buffered_poly.geom_type == 'Polygon':
+                global_coastline_polygons.append(buffered_poly)
+            elif buffered_poly.geom_type == 'MultiPolygon':
+                for p in buffered_poly.geoms:
+                    global_coastline_polygons.append(p)
+                    
+        # Build the C-optimized STRtree spatial index
+        if global_coastline_polygons:
+            coastline_tree = STRtree(global_coastline_polygons)
+        
+        log.info(f"Pre-processed {len(global_coastline_polygons)} highly optimized static coastline polygons successfully.")
+    else:
+        log.warning("No offline coastline file found. Scenarios will lack land bounds.")
+    # -------------------------------------------------------------
 
     start_sec = timestamps_sec[0]
     end_sec = timestamps_sec[-1]
@@ -579,6 +408,7 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
     vessel_to_exported_fleets = defaultdict(list)
     last_start_min = max(total_minutes - WINDOW_MINUTES, 0)
 
+    log.info("Beginning high-speed temporal scan...")
     for min_offset in range(0, last_start_min + 1, WINDOW_STEP_MINUTES):
         t0_sec = start_sec + (min_offset * 60)
         t1_sec = t0_sec + (WINDOW_MINUTES * 60)
@@ -620,8 +450,7 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
         coords = np.column_stack((mmsi_mean_lat, mmsi_mean_lon))
         tree = cKDTree(coords)
 
-
-        # --- MIXED SAMPLING: Decide path for this window ---
+        # --- MIXED SAMPLING ---
         use_strict = False
         if SAMPLING_MODE == "strict":
             use_strict = True
@@ -630,7 +459,6 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
         elif SAMPLING_MODE == "mixed":
             use_strict = (np.random.rand() < STRICT_SAMPLING_RATIO)
 
-        # --- COMMON: Compute stats for both paths ---
         mmsi_mean_sog = np.zeros(num_unique, dtype=np.float64)
         mmsi_max_len = np.zeros(num_unique, dtype=np.float64)
         np.add.at(mmsi_mean_sog, inv_indices, w_sog)
@@ -651,13 +479,10 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
         densities = np.array([len(nbrs) for nbrs in grid_neighbors])
 
         if use_strict:
-            # ===== STRICT PATH: Large-mover-first =====
-            # Skip window if it cannot yield enough large movers
             if n_large_movers_in_window < TARGET_LARGE_MOVERS_PER_SCENE:
                 stats['windows_skipped_insufficient_large_movers'] += 1
                 continue
 
-            # Score large movers as ego candidates by neighborhood richness
             ego_candidate_mask = large_mover_mask
             if not np.any(ego_candidate_mask):
                 stats['skipped_anchor_too_few_rows'] += 1
@@ -671,34 +496,23 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
 
             anchor_order = np.argsort(-ego_scores[ego_candidate_mask])
             ranked_anchor_indices = np.where(ego_candidate_mask)[0][anchor_order]
-            focus_on_moving_cargo = True  # for compatibility with downstream logic
         else:
-            # ===== RELAXED PATH: Density-first (original logic) =====
-            # 80% chance to hunt for big moving ships, 20% chance to fallback to raw density
             focus_on_moving_cargo = np.random.rand() < 0.80
-
             if focus_on_moving_cargo:
-                # 80% Mode: Exploit (Prioritize massive, moving cargo ships)
                 moving_mask = mean_speed_knots > MIN_DYNAMIC_SPEED_KNOTS
                 valid_anchor_mask = (densities > 1) & (mmsi_counts >= 2) & moving_mask
-                
                 if not np.any(valid_anchor_mask):
                     continue
-                    
                 anchor_scores = densities[valid_anchor_mask] * mmsi_max_len[valid_anchor_mask]
                 anchor_order = np.argsort(-anchor_scores)
                 ranked_anchor_indices = np.where(valid_anchor_mask)[0][anchor_order]
-                
             else:
-                # 20% Mode: Explore (Fallback to pure density for anchored fleets & small craft)
                 valid_anchor_mask = (densities > 1) & (mmsi_counts >= 2)
                 if not np.any(valid_anchor_mask):
                     continue
-                    
                 anchor_scores = densities[valid_anchor_mask]
                 anchor_order = np.argsort(-anchor_scores)
                 ranked_anchor_indices = np.where(valid_anchor_mask)[0][anchor_order]
-            # -------------------------------------------------------------
 
         vessel_indices_map = defaultdict(list)
         for i_row, m_idx in enumerate(inv_indices):
@@ -746,17 +560,13 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                 stats['skipped_too_few_after_resample'] += 1
                 continue
 
-            # --- FIX 1: THE UNIVERSAL SCENE CLOCK ---
-
-            # --- DYNAMIC TIME STEP SELECTION ---
-            # --- FIX 2: ADAPTIVE TIME STEP SELECTION ---
             anchor_res = valid_groups[anchor_mmsi]
             total_available_frames = len(anchor_res['t_sec'])
-            
+
             if total_available_frames < TARGET_FRAMES:
                 stats['skipped_too_few_after_resample'] += 1
                 continue
-                
+
             best_start_idx = 0
             highest_speed = 0.0
             for i in range(total_available_frames - TARGET_FRAMES + 1):
@@ -764,25 +574,21 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                 if window_speed > highest_speed:
                     highest_speed = window_speed
                     best_start_idx = i
-                        
-            scene_t_sec = anchor_res['t_sec'][best_start_idx : best_start_idx + TARGET_FRAMES]
-            # -------------------------------------------
 
-            # --- FIX 2: TEMPORAL SYNCHRONIZATION ---
-            # Throw out any ship that doesn't exist during those exact 20 timestamps
+            scene_t_sec = anchor_res['t_sec'][best_start_idx : best_start_idx + TARGET_FRAMES]
+
             mmsis_to_drop_time = set()
             for m, res in valid_groups.items():
                 if not np.all(np.isin(scene_t_sec, res['t_sec'])):
                     mmsis_to_drop_time.add(m)
-            
+
             for m in mmsis_to_drop_time:
                 del valid_groups[m]
-                
+
             if len(valid_groups) < 2 or anchor_mmsi not in valid_groups:
                 stats['skipped_temporal_desync'] += 1
                 continue
 
-            # Lock the mapping origin strictly to the anchor's synchronized physical starting position
             s_idx_anchor = np.searchsorted(valid_groups[anchor_mmsi]['t_sec'], scene_t_sec[0])
             origin_lat = valid_groups[anchor_mmsi]['latitude'][s_idx_anchor]
             origin_lon = valid_groups[anchor_mmsi]['longitude'][s_idx_anchor]
@@ -794,7 +600,6 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
 
             if len(valid_groups) > MAX_SHIPS_PER_SCENE:
                 stats['boxes_downsampled'] += 1
-                # Priority-based keep: ego + large movers + close others
                 ship_priorities = []
                 for m in valid_groups:
                     res = valid_groups[m]
@@ -803,12 +608,11 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                     is_cargo_type = is_cargo_or_tanker(res['vessel_type'])
                     mean_sog_knots = np.mean(res['sog_ms']) / 0.514444
                     is_fast_cargo = is_large and is_cargo_type and mean_sog_knots > CARGO_SPEED_KNOTS
-                    
+
                     v_lat = np.mean(res['latitude'])
                     v_lon = np.mean(res['longitude'])
                     dist = np.hypot(v_lat - origin_lat, v_lon - origin_lon)
-                    
-                    # Priority: ego (0) > large fast cargo (1) > large (2) > others by distance (3+)
+
                     if is_ego:
                         priority = 0
                     elif is_fast_cargo:
@@ -816,10 +620,10 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                     elif is_large:
                         priority = 2
                     else:
-                        priority = 3 + dist * 1000  # Distance tiebreaker
-                    
+                        priority = 3 + dist * 1000
+
                     ship_priorities.append((priority, dist, m))
-                
+
                 ship_priorities.sort(key=lambda x: (x[0], x[1]))
                 keep = set([x[2] for x in ship_priorities[:MAX_SHIPS_PER_SCENE]])
                 valid_groups = {m: valid_groups[m] for m in keep}
@@ -832,74 +636,51 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                 stats['skipped_anchor_dropped_by_cpa'] += 1
                 continue
 
-            # --- MANEUVER FILTER ---
-       # --- FIX 3: ADAPTIVE MANEUVER & DISPLACEMENT FILTER (LARGE-SHIP AWARE) ---
             dynamic_ship_count = 0
             meaningful_movement_count = 0
             large_mover_count = 0
-            
+
             for m, res in valid_groups.items():
                 s_idx = np.searchsorted(res['t_sec'], scene_t_sec[0])
                 sliced_r = res['yaw_rate_r'][s_idx : s_idx + TARGET_FRAMES]
                 sliced_sog = res['sog_ms'][s_idx : s_idx + TARGET_FRAMES]
-                
-                # 1. Calculate physical straight-line displacement (A to B)
+
                 start_lat = res['latitude'][s_idx]
                 start_lon = res['longitude'][s_idx]
                 end_lat = res['latitude'][s_idx + TARGET_FRAMES - 1]
                 end_lon = res['longitude'][s_idx + TARGET_FRAMES - 1]
-                
+
                 dx = (end_lon - start_lon) * 111000.0 * np.cos(np.deg2rad(start_lat))
                 dy = (end_lat - start_lat) * 111000.0
                 displacement_m = np.hypot(dx, dy)
-                
+
                 if displacement_m > MIN_DISPLACEMENT_METERS:
                     meaningful_movement_count += 1
-                
-                # 2. Calculate dynamic kinematics
+
                 mean_speed_knots = np.mean(sliced_sog) / 0.514444
                 total_turn_deg = np.sum(np.abs(sliced_r)) * DT_SECONDS * (180.0 / np.pi)
-                
-                # Check if this is a large cargo ship in transit
+
                 is_large = res['length'] > LARGE_SHIP_LENGTH_M
                 is_cargo_type = is_cargo_or_tanker(res['vessel_type'])
                 is_large_cargo_transit = is_large and is_cargo_type and mean_speed_knots > CARGO_SPEED_KNOTS
-                
-                # Large cargo in transit counts as dynamic even without significant turn
+
                 if is_large_cargo_transit:
                     dynamic_ship_count += 1
                     large_mover_count += 1
                 elif mean_speed_knots > MIN_DYNAMIC_SPEED_KNOTS and total_turn_deg > MIN_TURN_DEG_PER_SCENE:
                     dynamic_ship_count += 1
-                    
-            # RULE 1 (Universal Ban): 
-            # If NO ship travels at least 50 meters, the entire scene is just jitter/anchored. Delete it.
+
             if meaningful_movement_count < 1:
                 stats['skipped_boring_straight_lines'] += 1
                 continue
-                
-            # RULE 2: Require at least 2 dynamic ships (strict mode) or 1 (relaxed mode)
+
             min_dynamic = 2 if use_strict else 1
             if dynamic_ship_count < min_dynamic:
                 stats['skipped_boring_straight_lines'] += 1
                 continue
-            
-            # RULE 3: In strict mode, require large movers; relaxed mode skips this
+
             if use_strict and large_mover_count < TARGET_LARGE_MOVERS_PER_SCENE:
                 stats['skipped_insufficient_large_movers'] += 1
-                continue
-            # ------------------------------------------------------
-
-            mmsis_to_drop_grounding = set()
-            for m, res in valid_groups.items():
-                if check_grounding(bathymetry, res['latitude'], res['longitude'], float(res['draft']), stats=stats):
-                    mmsis_to_drop_grounding.add(m)
-                    stats['grounding_flags'] += 1
-            for m in mmsis_to_drop_grounding:
-                del valid_groups[m]
-
-            if len(valid_groups) < 2 or anchor_mmsi not in valid_groups:
-                stats['skipped_due_to_grounding'] += 1
                 continue
 
             current_fleet = set(valid_groups.keys())
@@ -917,40 +698,40 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                 stats['skipped_redundant_fleet'] += 1
                 continue
 
-            # --- NEW: Per-scenario coastline fetching (fast, cached, deterministic) ---
-            if COASTLINE_PER_SCENARIO:
-                coastlines = fetch_coastlines_for_scenario(origin_lat, origin_lon, stats=stats)
-            else:
-                coastlines = coastlines_near(
-                    all_coastlines, origin_lat - LOCAL_BOX_DEG, origin_lon - LOCAL_BOX_DEG,
-                    origin_lat + LOCAL_BOX_DEG, origin_lon + LOCAL_BOX_DEG
-                )
-
+            # -------------------------------------------------------------
+            # OFFLINE COASTLINE FILTER (INSTANT GENERATION)
+            # -------------------------------------------------------------
+            scenario = Scenario(dt=DT_SECONDS, scenario_id=f"ZAM_Batch-{scenario_counter:04d}_1_T-1")
+            
             transformer = Transformer.from_crs(
                 "epsg:4326", f"+proj=aeqd +lat_0={origin_lat} +lon_0={origin_lon} +units=m", always_xy=True
             )
-            scenario = Scenario(dt=DT_SECONDS, scenario_id=f"ZAM_Batch-{scenario_counter:04d}_1_T-1")
 
-            for coastline in coastlines:
-                if len(coastline) < 2:
-                    continue
-                projected = [transformer.transform(lon, lat) for lon, lat in coastline]
-                scenario.add_objects(StaticObstacle(
-                    obstacle_id=scenario.generate_object_id(),
-                    obstacle_type=ObstacleType.LAND,
-                    obstacle_shape=CRPolygon(np.array(LineString(projected).buffer(20.0).exterior.coords)),
-                    initial_state=InitialState(position=np.array([0, 0]), orientation=0.0, time_step=0)
-                ))
-
-            if bathymetry is not None:
-                max_draft = max([res['draft'] for res in valid_groups.values()])
-                add_shallow_waters(
-                    scenario, bathymetry, transformer,
-                    origin_lat - LOCAL_BOX_DEG, origin_lon - LOCAL_BOX_DEG,
-                    origin_lat + LOCAL_BOX_DEG, origin_lon + LOCAL_BOX_DEG,
-                    shallow_threshold_m=max_draft + SHALLOW_SAFETY_MARGIN_M,
-                    waters_id_start=10000,
-                )
+            # Get exact anchor coordinates in the global projection
+            anchor_x, anchor_y = global_transformer.transform(origin_lon, origin_lat)
+            
+            if coastline_tree is not None:
+                # Create search box for the STRTree (+/- MAX_SCENE_RADIUS_M around the anchor)
+                search_box = box(anchor_x - MAX_SCENE_RADIUS_M, anchor_y - MAX_SCENE_RADIUS_M,
+                                 anchor_x + MAX_SCENE_RADIUS_M, anchor_y + MAX_SCENE_RADIUS_M)
+                
+                # Instantly retrieve intersecting pre-processed polygons
+                intersecting_indices = coastline_tree.query(search_box)
+                
+                for c_idx in intersecting_indices:
+                    poly = global_coastline_polygons[c_idx]
+                    
+                    # Extract coordinates and translate them to local scenario origin instantly
+                    ext_coords = np.array(poly.exterior.coords)
+                    local_coords = ext_coords - np.array([anchor_x, anchor_y])
+                    
+                    # Because we simplified and lowered resolution, this CRPolygon loads instantly
+                    scenario.add_objects(StaticObstacle(
+                        obstacle_id=scenario.generate_object_id(),
+                        obstacle_type=ObstacleType.LAND,
+                        obstacle_shape=CRPolygon(local_coords),
+                        initial_state=InitialState(position=np.array([0, 0]), orientation=0.0, time_step=0)
+                    ))
 
             n_obstacles_added = 0
             for mmsi_val, res in valid_groups.items():
@@ -961,22 +742,23 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
 
                 s_idx = np.searchsorted(res['t_sec'], scene_t_sec[0])
                 
+                lons_seq = res['longitude'][s_idx : s_idx + TARGET_FRAMES]
+                lats_seq = res['latitude'][s_idx : s_idx + TARGET_FRAMES]
+                xs_seq, ys_seq = transformer.transform(lons_seq, lats_seq)
+                
                 state_list = []
                 trajectory_is_valid = True
-                
+
                 for f_idx in range(TARGET_FRAMES):
                     local_idx = s_idx + f_idx
+                    exact_time_step = f_idx
                     
-                    # --- FIX 3: ZERO-INDEXING TENSORS ---
-                    # Forces time_step to be 0, 1, 2, 3... perfectly synced for all ships
-                    exact_time_step = f_idx  
-                    
-                    x, y = transformer.transform(res['longitude'][local_idx], res['latitude'][local_idx])
-                    
+                    x, y = xs_seq[f_idx], ys_seq[f_idx]
+
                     if abs(x) > MAX_SCENE_RADIUS_M or abs(y) > MAX_SCENE_RADIUS_M:
                         trajectory_is_valid = False
                         break
-                        
+
                     heading_rad = np.deg2rad((90.0 - res['heading'][local_idx]) % 360.0)
                     state_list.append(TFState(
                         position=np.array([x, y]), orientation=heading_rad,
@@ -986,14 +768,14 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
 
                 if not trajectory_is_valid or len(state_list) != TARGET_FRAMES:
                     continue
-                    
+
                 initial_time_step = state_list[0].time_step
                 initial_state = InitialState(
                     position=state_list[0].position, velocity=state_list[0].velocity,
                     velocity_y=state_list[0].velocity_y, orientation=state_list[0].orientation,
                     yaw_rate=state_list[0].yaw_rate, time_step=initial_time_step
                 )
-                
+
                 shape = Rectangle(length=ship_length, width=ship_width)
                 scenario.add_objects(DynamicObstacle(
                     obstacle_id=scenario.generate_object_id(), obstacle_type=obstacle_type,
@@ -1026,11 +808,10 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                     n_vessels=n_obstacles_added,
                 ))
 
-                # --- NEW: Track ego distribution for diffusion training ---
                 anchor_res = valid_groups[anchor_mmsi]
                 anchor_len = anchor_res['length']
                 anchor_mean_sog_knots = np.mean(anchor_res['sog_ms']) / 0.514444
-                
+
                 if (anchor_len > LARGE_SHIP_LENGTH_M and
                         is_cargo_or_tanker(anchor_res['vessel_type']) and
                         anchor_mean_sog_knots > CARGO_SPEED_KNOTS):
@@ -1039,18 +820,14 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
                     stats['scenarios_ego_small'] += 1
                 else:
                     stats['scenarios_ego_anchored'] += 1
-                
-                # Track large movers per scene for averaging
+
                 stats['large_movers_per_scene_sum'] = stats.get('large_movers_per_scene_sum', 0) + large_mover_count
-                
                 stats['scenarios_written'] += 1
-                # Note: focus_on_moving_cargo no longer used; all scenarios use ego-centric selection
-                stats['scenarios_written_moving_mode'] += 1  # Keep for compatibility
-                
-                log.info("[%d] wrote %s with %d vessels (Ego: len=%.0f, sog=%.1fkt, LargeMovers=%d)", 
+
+                log.info("[%d] wrote %s with %d vessels (Ego: len=%.0f, sog=%.1fkt, LargeMovers=%d)",
                          scenario_counter, output_file, n_obstacles_added, anchor_len, anchor_mean_sog_knots, large_mover_count)
                 scenario_counter += 1
-                # ------------------------------------------------------
+
     if manifest_entries:
         with open(manifest_path, "w") as f:
             for e in manifest_entries:
@@ -1060,5 +837,118 @@ def generate_dataset_from_ais(zst_filepath, output_dir="/run/media/akshat/Akshat
     _log_summary(stats)
     return stats
 
+# --- MAIN LOCAL EXECUTION BLOCK ---
 if __name__ == "__main__":
-    generate_dataset_from_ais("/run/media/akshat/Akshat_USB/AISFiles/LA_ais.csv.zst", sampling_strategy="density_first")
+    
+    print("🚀 Starting Automated Local Scenario Generation Pipeline...")
+    
+    # ---------------------------------------------------------
+    # CONFIGURATION & DOWNLOADS
+    # ---------------------------------------------------------
+    base_output_dir = "./Generated_Scenarios"
+    temp_dir = "./Local_Temp_Data"
+    os.makedirs(base_output_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    AIS_FOLDER_URL = "https://drive.google.com/drive/folders/1KVs4XuUANFNscoFWhJImEHtUVSwA3LLs?usp=sharing"
+    COASTLINE_ZIP_ID = "15EklKQ1HhjogCTA4MITfrKKcCwI2WBXp"
+
+    local_zip_path = os.path.join(temp_dir, "coastline-split.zip")
+    ais_downloads_dir = os.path.join(temp_dir, "AISFiles")
+
+    # 1. Download & Extract Coastline Shapefile
+    shp_files = glob.glob(os.path.join(temp_dir, "**", "lines.shp"), recursive=True)
+    if shp_files:
+        local_shp_file = shp_files[0]
+        log.info(f"Found existing shapefile at: {local_shp_file}")
+    else:
+        log.info("Downloading Global Coastline ZIP from Google Drive...")
+        gdown.download(id=COASTLINE_ZIP_ID, output=local_zip_path, quiet=False)
+        
+        log.info("Extracting shapefile...")
+        with zipfile.ZipFile(local_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(temp_dir)
+            
+        if os.path.exists(local_zip_path):
+            os.remove(local_zip_path)
+            
+        shp_files = glob.glob(os.path.join(temp_dir, "**", "lines.shp"), recursive=True)
+        if not shp_files:
+            log.error("❌ Extracted the ZIP, but could not find 'lines.shp' anywhere inside.")
+            sys.exit(1)
+        local_shp_file = shp_files[0]
+        log.info("Extraction complete. ZIP deleted to save space.")
+
+    # 2. Download AISFiles Folder
+    if not os.path.exists(ais_downloads_dir):
+        os.makedirs(ais_downloads_dir, exist_ok=True)
+        
+    if not os.listdir(ais_downloads_dir):
+        log.info("Downloading AISFiles folder from Google Drive...")
+        gdown.download_folder(url=AIS_FOLDER_URL, output=ais_downloads_dir, quiet=False, use_cookies=False)
+
+    input_files = glob.glob(os.path.join(ais_downloads_dir, "**", "*.csv.zst"), recursive=True)
+    if not input_files:
+        input_files = glob.glob(os.path.join(ais_downloads_dir, "**", "*.csv"), recursive=True)
+
+    if not input_files:
+        log.error("❌ No AIS files found in the downloaded folder.")
+        sys.exit(1)
+
+    log.info(f"Found {len(input_files)} files. Loading global map into memory...")
+
+    # 3. Load Global Map into GeoPandas
+    world_coastlines = gpd.read_file(local_shp_file)
+    log.info("Global coastlines loaded successfully.")
+
+    # 4. Process each AIS file
+    for file_path in input_files:
+        base_filename = os.path.basename(file_path).split('.')[0]
+        log.info(f"\n======================================")
+        log.info(f"===> Processing dataset: {base_filename}")
+        log.info(f"======================================")
+        
+        file_output_dir = os.path.join(base_output_dir, base_filename)
+        os.makedirs(file_output_dir, exist_ok=True)
+        manifest_path = os.path.join(file_output_dir, "manifest.jsonl")
+
+        try:
+            min_lat, min_lon, max_lat, max_lon = get_bounding_box_from_ais(file_path)
+            
+            buffer = 0.1
+            bbox = box(min_lon - buffer, min_lat - buffer, max_lon + buffer, max_lat + buffer)
+            
+            log.info("Clipping global map to local dataset boundary...")
+            local_lines = world_coastlines.cx[min_lon - buffer : max_lon + buffer, min_lat - buffer : max_lat + buffer]
+            clipped_coast = local_lines.clip(bbox)
+            
+            coastlines_json = []
+            for geom in clipped_coast.geometry:
+                if geom.geom_type == 'LineString':
+                    coastlines_json.append(list(geom.coords))
+                elif geom.geom_type == 'MultiLineString':
+                    for line in geom.geoms:
+                        coastlines_json.append(list(line.coords))
+            
+            local_coastline_path = os.path.join(temp_dir, f"{base_filename}_coast.json")
+            with open(local_coastline_path, 'w') as f:
+                json.dump(coastlines_json, f)
+
+            generate_dataset_from_ais(
+                zst_filepath=file_path, 
+                output_dir=file_output_dir,
+                coastline_file=local_coastline_path,
+                sampling_strategy="density_first",
+                manifest_path=manifest_path
+            )
+
+            if os.path.exists(local_coastline_path):
+                os.remove(local_coastline_path)
+                
+        except Exception as e:
+            log.error(f"❌ Failed to process {file_path}: {e}")
+            
+        finally:
+            gc.collect()
+
+    print("\n🎉 All processing complete! Check the 'Generated_Scenarios' folder.")

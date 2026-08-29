@@ -49,4 +49,4 @@ def format_mendeley_dataset(input_csv, output_zst="LA_ais.csv.zst"):
 
 if __name__ == "__main__":
     # Change "Mendeley_Singapore.csv" to whatever your downloaded file is named
-    format_mendeley_dataset("/run/media/akshat/Akshat_USB/AISData/data/Los_Angeles_anonymized.csv", "/run/media/akshat/Akshat_USB/LA_ais.csv.zst")
+    format_mendeley_dataset("/run/media/akshat/Akshat_USB/ais-2026-01-01.csv", "/run/media/akshat/Akshat_USB/ais.csv.zst")
