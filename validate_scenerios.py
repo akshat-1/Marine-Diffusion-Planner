@@ -54,7 +54,7 @@ PHYSICAL_LIMITS = dict(
 # ---------------------------------------------------------------------------
 
 def load_scenario(xml_path):
-    """Returns (dt, {obstacle_id: {type, length, width, depth, states}}, shallows)
+    """Returns (dt, {obstacle_id: {type, length, width, depth, states}}, shallows, static_obstacles_count)
     where shallows is a list of (waters_id, vertex_list, depth)."""
     scenario, _ = CommonOceanFileReader(xml_path).open()
     obstacles = {}
@@ -79,7 +79,8 @@ def load_scenario(xml_path):
         )
     shallows = [(sh.waters_id, [tuple(p) for p in sh.shape.vertices], float(sh.depth))
                 for sh in scenario.shallows]
-    return float(scenario.dt), obstacles, shallows
+    static_obstacles_count = len(scenario.static_obstacles)
+    return float(scenario.dt), obstacles, shallows, static_obstacles_count
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +188,91 @@ def check_grounding(obstacles, shallows):
                 continue
             break
     return issues
+
+
+def rank_scenario_quality(dt, obstacles, shallows, static_obstacles_count, integrity_issues, overlap_issues, grounding_issues):
+    """
+    Ranks scenario quality on a 0 - 100 scale using 5 key maritime planning metrics:
+    1. Integrity Sub-score (30 pts): Hard failures (NaNs, overlaps, grounding) = 0
+    2. Traffic Density Sub-score (25 pts): Multi-vessel complexity (2 ships=10, 3-4 ships=18, 5+ ships=25)
+    3. Kinematics & Maneuvers Sub-score (20 pts): Yaw-rate turning diversity (|yaw_rate| > 0.02 rad/s)
+    4. COLREG Encounters Sub-score (15 pts): Head-on, crossing, overtaking interactions
+    5. Environment Context Sub-score (10 pts): Land coastlines / static obstacles presence
+    """
+    all_issues = integrity_issues + overlap_issues + grounding_issues
+    if all_issues:
+        integrity_score = 0.0
+    else:
+        integrity_score = 30.0
+
+    n_vessels = len(obstacles)
+    if n_vessels >= 5:
+        density_score = 25.0
+    elif n_vessels >= 3:
+        density_score = 18.0
+    elif n_vessels == 2:
+        density_score = 10.0
+    else:
+        density_score = 0.0
+
+    maneuver_pts = 0.0
+    for obs in obstacles.values():
+        speeds = [math.hypot(s['velocity'], s['velocity_y']) for s in obs['states']]
+        yaw_rates = [abs(s['yaw_rate']) for s in obs['states']]
+        if np.mean(speeds) > 1.0 and np.max(yaw_rates) > 0.02:
+            maneuver_pts += 1.0
+
+    if n_vessels > 0:
+        maneuver_ratio = maneuver_pts / n_vessels
+        maneuver_score = min(20.0, 5.0 + 15.0 * maneuver_ratio)
+    else:
+        maneuver_score = 0.0
+
+    encounter_score = 5.0
+    items = list(obstacles.values())
+    found_encounter = False
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            label = classify_encounter(items[i], items[j])
+            if label in ('head_on', 'crossing'):
+                encounter_score = 15.0
+                found_encounter = True
+                break
+            elif label == 'overtaking':
+                encounter_score = max(encounter_score, 12.0)
+                found_encounter = True
+        if found_encounter and encounter_score == 15.0:
+            break
+
+    if static_obstacles_count > 0 or shallows:
+        context_score = 10.0
+    else:
+        context_score = 5.0
+
+    total_score = integrity_score + density_score + maneuver_score + encounter_score + context_score
+
+    if integrity_score == 0:
+        tier = "F (Failed)"
+    elif total_score >= 85.0:
+        tier = "S (Superior)"
+    elif total_score >= 70.0:
+        tier = "A (Advanced)"
+    elif total_score >= 50.0:
+        tier = "B (Baseline)"
+    else:
+        tier = "C (Low Quality)"
+
+    return {
+        "quality_score": round(total_score, 2),
+        "tier": tier,
+        "sub_scores": {
+            "integrity": integrity_score,
+            "density": density_score,
+            "maneuverability": round(maneuver_score, 2),
+            "encounter": encounter_score,
+            "environment": context_score,
+        }
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +457,7 @@ def save_plots(all_scenarios, out_dir):
 # ---------------------------------------------------------------------------
 
 def main():
+    import shutil
     ap = argparse.ArgumentParser()
     ap.add_argument('scenario_dir')
     ap.add_argument('--manifest', default=None)
@@ -379,6 +466,9 @@ def main():
     ap.add_argument('--min-trajectory-len', type=int, default=None)
     ap.add_argument('--fixed-seq-len', type=int, default=None)
     ap.add_argument('--max-issues-printed', type=int, default=20)
+    ap.add_argument('--min-quality-score', type=float, default=None, help='Filter scenarios by minimum quality score (0-100)')
+    ap.add_argument('--top-k', type=int, default=None, help='Limit exported scenarios to top K ranked')
+    ap.add_argument('--export-dir', default=None, help='Directory to copy top/filtered scenario XML files')
     args = ap.parse_args()
 
     paths = sorted(glob.glob(os.path.join(args.scenario_dir, '*.xml')))
@@ -388,32 +478,72 @@ def main():
 
     all_scenarios = []
     all_issues = []
+    rankings = []
     n_parse_failures = 0
+
     for path in paths:
         try:
-            dt, obstacles, shallows = load_scenario(path)
+            dt, obstacles, shallows, static_obstacles_count = load_scenario(path)
         except Exception as exc:
             n_parse_failures += 1
             all_issues.append(f"{os.path.basename(path)}: FAILED TO PARSE -- {exc}")
             continue
-        issues = check_integrity(dt, obstacles, args.min_trajectory_len, args.fixed_seq_len)
-        issues += check_no_overlaps(obstacles)
-        issues += check_grounding(obstacles, shallows)
+
+        integrity_issues = check_integrity(dt, obstacles, args.min_trajectory_len, args.fixed_seq_len)
+        overlap_issues = check_no_overlaps(obstacles)
+        grounding_issues = check_grounding(obstacles, shallows)
+        
+        issues = integrity_issues + overlap_issues + grounding_issues
         for issue in issues:
             all_issues.append(f"{os.path.basename(path)}: {issue}")
+            
         all_scenarios.append((dt, obstacles))
+
+        quality = rank_scenario_quality(
+            dt, obstacles, shallows, static_obstacles_count,
+            integrity_issues, overlap_issues, grounding_issues
+        )
+
+        rankings.append({
+            "file_name": os.path.basename(path),
+            "file_path": path,
+            "quality_score": quality["quality_score"],
+            "tier": quality["tier"],
+            "sub_scores": quality["sub_scores"],
+            "issues": issues,
+        })
+
+    # Sort rankings by quality score descending
+    rankings.sort(key=lambda r: r["quality_score"], reverse=True)
 
     adequacy = aggregate_adequacy(all_scenarios)
     norm_stats = normalization_stats(all_scenarios)
     baseline = constant_velocity_baseline(all_scenarios)
 
-    print("=" * 70)
-    print(f"Scanned {len(paths)} files ({n_parse_failures} failed to parse)")
-    print(f"Integrity issues found: {len(all_issues)}")
-    for issue in all_issues[:args.max_issues_printed]:
-        print("  -", issue)
-    if len(all_issues) > args.max_issues_printed:
-        print(f"  ... and {len(all_issues) - args.max_issues_printed} more")
+    # Compute Tier Breakdown
+    tier_counts = Counter(r["tier"] for r in rankings)
+
+    print("=" * 75)
+    print(f"   SCENARIO QUALITY RANKING & AUDIT REPORT ({len(paths)} files scanned)")
+    print("=" * 75)
+    print(f"Parse Failures: {n_parse_failures} | Integrity Issues: {len(all_issues)}")
+
+    print("\n--- Quality Tier Distribution ---")
+    for tier_name in ["S (Superior)", "A (Advanced)", "B (Baseline)", "C (Low Quality)", "F (Failed)"]:
+        count = tier_counts.get(tier_name, 0)
+        pct = (count / len(rankings) * 100) if rankings else 0
+        print(f"  Tier {tier_name:<15}: {count:5d} scenarios ({pct:5.1f}%)")
+
+    print("\n--- Top 10 Best Ranked Scenarios ---")
+    for r in rankings[:10]:
+        sub = r["sub_scores"]
+        print(f"  ★ [{r['quality_score']:5.1f} pts | Tier {r['tier']}] {r['file_name']} -> "
+              f"Density:{sub['density']:.0f} Man:{sub['maneuverability']:.1f} Enc:{sub['encounter']:.0f} Env:{sub['environment']:.0f}")
+
+    if len(rankings) > 10:
+        print("\n--- Bottom 10 Lowest Ranked Scenarios ---")
+        for r in rankings[-10:]:
+            print(f"  ⚠ [{r['quality_score']:5.1f} pts | Tier {r['tier']}] {r['file_name']} -> Issues: {len(r['issues'])}")
 
     print("\n--- Adequacy ---")
     print(f"scenarios: {adequacy['n_scenarios']}   trajectories: {adequacy['n_trajectories']}")
@@ -434,14 +564,31 @@ def main():
     if args.manifest and os.path.exists(args.manifest):
         print("\n--- Manifest coverage ---")
         print(manifest_report(args.manifest))
-    else:
-        print("\n(no --manifest supplied -- skipping geographic/temporal coverage and "
-              "leak-safe split checks; see the docstring at the top of this file)")
 
-    report = dict(n_files=len(paths), n_parse_failures=n_parse_failures,
-                  n_integrity_issues=len(all_issues), issues=all_issues,
-                  adequacy=adequacy, constant_velocity_baseline=baseline,
-                  normalization_stats=norm_stats)
+    # Export Top-K or filtered scenarios if requested
+    filtered_rankings = rankings
+    if args.min_quality_score is not None:
+        filtered_rankings = [r for r in filtered_rankings if r["quality_score"] >= args.min_quality_score]
+    if args.top_k is not None:
+        filtered_rankings = filtered_rankings[:args.top_k]
+
+    if args.export_dir and filtered_rankings:
+        os.makedirs(args.export_dir, exist_ok=True)
+        for r in filtered_rankings:
+            shutil.copy2(r["file_path"], os.path.join(args.export_dir, r["file_name"]))
+        print(f"\nSuccessfully exported {len(filtered_rankings)} scenarios to '{args.export_dir}/'")
+
+    report = dict(
+        n_files=len(paths),
+        n_parse_failures=n_parse_failures,
+        n_integrity_issues=len(all_issues),
+        tier_distribution=dict(tier_counts),
+        top_ranked_scenarios=[r["file_name"] for r in rankings[:20]],
+        issues=all_issues,
+        adequacy=adequacy,
+        constant_velocity_baseline=baseline,
+        normalization_stats=norm_stats,
+    )
     if args.report_json:
         with open(args.report_json, 'w') as f:
             json.dump(report, f, indent=2)
