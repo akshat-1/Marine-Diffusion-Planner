@@ -20,10 +20,10 @@ The HDP `CustomDiT` decoder predicts action noise $\epsilon_\theta(z_t, t, y, C,
 2. $t \in \mathbb{R}^{B}$: Diffusion timestep.
 3. $y \in \mathbb{R}^{B \times D_y}$: Proprioception vector (ego status at current timestamp $T=0$).
 4. $C \in \mathbb{R}^{B \times N_{tokens} \times D_{hidden}}$: **Scene Context Token Sequence**.
-5. $M_C \in \mathbb{R}^{B \times N_{tokens}}$: Context Attention Mask ($1 = \text{valid}, 0 = \text{padded}$).
+5. $M_C \in \mathbb{R}^{B \times N_{tokens}}$: Context Attention Mask ($1 = \mathrm{valid}, 0 = \mathrm{padded}$).
 
 Inside each `DiTBlock`, cross-attention fuses the diffusion trajectory tokens with the context sequence $C$:
-$$\text{Output} = \text{MultiHeadAttention}(Q = \text{adaLN}(x), K = C, V = C, \text{mask} = M_C)$$
+$$\mathrm{Output} = \mathrm{MultiHeadAttention}(Q = \mathrm{adaLN}(x), K = C, V = C, \mathrm{mask} = M_C)$$
 
 The expressivity, spatial grounding, and geometric fidelity of $C$ dictate the quality of the generated trajectory.
 

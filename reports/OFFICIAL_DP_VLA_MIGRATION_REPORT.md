@@ -70,7 +70,7 @@ self.blocks = nn.ModuleList([
 #### **After:** Official `CustomDiT` with `adaLN-Zero` Modulation
 - **Implementation:** Uses `DiTBlock` from `model/dit/DiT.py` and `CustomDiT` from `model/dit/decoder.py`.
 - **Mechanism:** Conditioned via `adaLN_modulation` producing 12 scale/shift/gate parameters per block:
-  $$\text{adaLN}(x) = \text{chunk}_{12}(W \cdot \text{SiLU}(y))$$
+  $$\mathrm{adaLN}(x) = \mathrm{chunk}_{12}(W \cdot \mathrm{SiLU}(y))$$
   Modulates Self-Attention, MLP, CustomCrossAttention, and Cross-MLP.
 ```python
 # OFFICIAL (model/dit/DiT.py)
@@ -268,7 +268,7 @@ The updated architecture and training workflow are **100% compatible** with futu
    - RL training normalizes candidate rewards per scene group:
      $$\hat{r}_i = \frac{r_i - \bar{r}}{\sigma_r + 1e-6}$$
    - The diffusion loss is weighted exponentially:
-     $$\mathcal{L}_{\text{RL}} = \frac{1}{B \cdot G} \sum_{i=1}^{B \cdot G} \exp(\beta \cdot \hat{r}_i) \cdot \mathcal{L}_{\text{diff}}(i)$$
+     $$\mathcal{L}_{\mathrm{RL}} = \frac{1}{B \cdot G} \sum_{i=1}^{B \cdot G} \exp(\beta \cdot \hat{r}_i) \cdot \mathcal{L}_{\mathrm{diff}}(i)$$
    - **Verification**: Added `reward_weighted_diffusion_loss()` in `utils/__init__.py` and verified the backward gradient step (`loss: 2.5009`).
 
 ---

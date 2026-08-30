@@ -18,7 +18,7 @@ This document tracks identified codebase issues, architectural alignment with th
 #### 3. Hybrid Waypoint Loss Timestep Scaling (High)
 - **Status**: FIXED
 - **Details**: Added explicit $\Delta t = 10.0$s scaling to `detached_integral` in `train.py` to correctly integrate velocities into spatial meters:
-  $$\hat{\tau}_0^x = \text{detached\_integral}(\hat{\tau}_0^v, W=3) \times \Delta t$$
+  $$\hat{\tau}_0^x = \mathrm{detached\_integral}(\hat{\tau}_0^v, W=3) \cdot \Delta t \quad (\text{where } \Delta t = 10.0\text{s})$$
 
 #### 4. Target Action Feature Indexing (High)
 - **Status**: FIXED

@@ -41,7 +41,7 @@ The codebase supports both the **Full Base Model (1024-dim, 12-layer)** and the 
 **Structure:** Sinusoidal embedding ($F=256$) $\to$ `nn.Sequential(Linear(F, hidden_size), SiLU(), Linear(hidden_size, hidden_size))`
 
 #### Formula:
-$$\text{Params}\_{\text{TimestepEmbedder}} = \underbrace{(F + 1) \times d}\_{\text{fc1}} + \underbrace{(d + 1) \times d}\_{\text{fc2}}$$
+$$\mathrm{Params}_{\mathrm{TimestepEmbedder}} = \underbrace{(F + 1) \times d}_{\mathrm{fc1}} + \underbrace{(d + 1) \times d}_{\mathrm{fc2}}$$
 
 #### Calculation for $d=512, F=256$:
 - `mlp[0]` (`Linear(256, 512)`): $(256 + 1) \times 512 = 131,584$

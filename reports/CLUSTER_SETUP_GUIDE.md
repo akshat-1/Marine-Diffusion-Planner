@@ -398,7 +398,7 @@ Before starting cluster training, review these configuration parameters in `trai
 
 3. **Learning Rate Adjustment**:
    If scaling global batch size by $K$, scale learning rate linearly:
-   $$\text{lr} = 5\times 10^{-4} \times \frac{\text{Global Batch Size}}{32}$$
+   $$\mathrm{lr} = 5\times 10^{-4} \times \frac{\mathrm{Global\ Batch\ Size}}{32}$$
 
 4. **Monitoring & Outputs**:
    - Checkpoints are saved under `weight/checkpoint_epoch_X.pt` on Node 0.

@@ -125,7 +125,7 @@ As a result, `loss_wpt` compares reconstructed velocities against target velocit
 
 #### Paper Specification (Section 4.2 & Appendix D.3):
 The paper defines the detached integration operator to balance temporal gradient flow:
-$$\hat{\tau}_\theta^x = M_W \tau_\theta^v \Delta t + \text{sg}((M - M_W)\tau_\theta^v \Delta t)$$
+$$\hat{\tau}_\theta^x = M_W \tau_\theta^v \Delta t + \mathrm{sg}((M - M_W)\tau_\theta^v \Delta t)$$
 where $M_W$ truncates integration to a sliding window of $W$ steps (default $W=3$).
 
 #### Codebase Implementation (`utils/__init__.py`, lines 9-24):
@@ -149,10 +149,10 @@ def detached_integral(u: torch.Tensor, detach_window_size: int = 1) -> torch.Ten
 In `train.py` (line 195):
 `pred_wpt = detached_integral(pred_x0[..., :2], detach_window_size=3)`
 
-While the `detached_integral` implementation in `utils/__init__.py` is mathematically equivalent to $M_W u + \text{sg}((M - M_W)u)$ for positive $W$, default values in `utils.hybrid_loss` default $W=3$ and $\omega=0.1$. However:
+While the `detached_integral` implementation in `utils/__init__.py` is mathematically equivalent to $M_W u + \mathrm{sg}((M - M_W)u)$ for positive $W$, default values in `utils.hybrid_loss` default $W=3$ and $\omega=0.1$. However:
 1. `train.py` does NOT call `utils.hybrid_loss`! Instead, it reimplements a buggy version inline (lines 193-198).
-2. In `train.py`, `target_wpt` is computed via plain `torch.cumsum` without multiplying by time interval $\Delta t$ ($DT\_SECONDS = 10.0s$).
-   - Positions in CommonOcean are in meters, velocity in m/s, timestep $\Delta t = 10s$.
+2. In `train.py`, `target_wpt` is computed via plain `torch.cumsum` without multiplying by time interval $\Delta t$ ($DT\_SECONDS = 10.0\text{s}$).
+   - Positions in CommonOcean are in meters, velocity in m/s, timestep $\Delta t = 10\text{s}$.
    - Integrating velocity $\sum v \cdot \Delta t$ requires multiplying by $\Delta t = 10.0$.
    - `train.py` omits $\Delta t$, resulting in integrated positions being off by a factor of 10!
 
@@ -162,7 +162,7 @@ While the `detached_integral` implementation in `utils/__init__.py` is mathemati
 
 #### Paper Specification (Section 5, Eq. 9 & Appendix D.4, D.5):
 - Policy optimization uses reward-weighted diffusion loss:
-  $$\mathcal{L}_{RL} = \mathbb{E}_{t, \epsilon, (s, \tau_0) \sim \mathcal{D}} \left[ \exp\left(\beta \cdot \frac{r - \bar{r}}{\sigma_r}\right) \|\tau_\theta^v - \tau_0^v\|_P^2 \right]$$
+  $$\mathcal{L}_{\mathrm{RL}} = \mathbb{E}_{t, \epsilon, (s, \tau_0) \sim \mathcal{D}} \left[ \exp\left(\beta \cdot \frac{r - \bar{r}}{\sigma_r}\right) \|\tau_\theta^v - \tau_0^v\|_P^2 \right]$$
 - Group normalization per candidate batch ($G=32$, $\beta=1.0$).
 - Multi-reward weighting: $\lambda_{risk} r_{risk} + \lambda_{follow} r_{follow} + \lambda_{lane} r_{lane}$.
 - EMA policy updates ($\alpha_{EMA} = 0.05$).
