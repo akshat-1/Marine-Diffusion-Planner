@@ -62,13 +62,19 @@ class AISScenarioDataset(Dataset):
         return len(self.index_map)
 
     def _extract_state_features(self, state):
-        # Extracts standard features: [x, y, velocity_x, velocity_y, heading, yaw_rate]
+        # Extracts features converting body-frame surge/sway to world-frame velocities:
+        # [x, y, vx_world, vy_world, heading, yaw_rate]
+        u = state.velocity
+        v = state.velocity_y
+        theta = state.orientation
+        vx_world = u * np.cos(theta) - v * np.sin(theta)
+        vy_world = u * np.sin(theta) + v * np.cos(theta)
         return np.array([
             state.position[0], 
             state.position[1], 
-            state.velocity, 
-            state.velocity_y, 
-            state.orientation, 
+            vx_world, 
+            vy_world, 
+            theta, 
             state.yaw_rate
         ])
 

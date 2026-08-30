@@ -79,7 +79,7 @@ def main():
         max_polylines=MAX_POLYLINES,
     )
 
-    # 2. Build Model & Diffusion SDE (matching official DP-VLA config)
+    # 2. Build Model & Diffusion SDE (matching official HDP / DP-VLA config)
     config = DpVlaConfig(
         with_encoder=False,      # Using lightweight context encoder for ego+agents+map
         hidden_size=512,
@@ -88,8 +88,8 @@ def main():
         num_actions=PRED_FRAMES,
         dim_action=4,
         dim_y=12,
-        model_type="noise",
-        kinematic_type="diff",   # Predict velocity/diff actions
+        model_type="x_start",    # HDP Paper: tau0-prediction (x_start) with tau0-loss
+        kinematic_type="diff",   # Velocity-based trajectory representation
     )
 
     model = DpVlaModel(config).to(device)
@@ -158,12 +158,9 @@ def main():
             if not (torch.isfinite(ego_hist).all() and torch.isfinite(target_full).all()):
                 continue
 
-            # Convert waypoints to target actions (diff/velocity representation)
-            target_actions = target_full[:, :, 2:6]  # [vx, vy, theta, yaw_rate] ignores the position
-            if config.kinematic_type == "diff":
-                model_actions = waypoint_to_diff(target_actions) # [delta_vx, delta_vy, theta, yaw_rate]
-            else:
-                model_actions = target_actions
+            # Target selection: [x, y, vx, vy, theta, yaw_rate]
+            target_wpt = target_full[:, :, :2]       # Spatial waypoints [x, y] in meters
+            model_actions = target_full[:, :, 2:6]   # Velocity actions [vx, vy, theta, yaw_rate]
 
             # Sample noise and timesteps via official DiffusionSDE
             action_with_noise, t, target_dict = diffusion_sde.sample(model_actions)
@@ -177,7 +174,7 @@ def main():
             # Encode context
             enc_out = model.fallback_encoder(ego_hist, agents, map_lines, agent_mask, map_mask)
 
-            # Predict noise
+            # Predict x_start (clean velocity actions tau0_v) directly
             output = model(
                 action_with_noise=action_with_noise,
                 time=t,
@@ -186,18 +183,18 @@ def main():
                 attention_mask=enc_out.attention_mask,
             )
 
-            # Supervised diffusion loss
-            loss_noise = F.mse_loss(output.prediction, target_dict["noise"])
+            # 1. Supervised tau0 diffusion loss on velocity representation (HDP Paper Eq. 3)
+            loss_vel = F.mse_loss(output.prediction, target_dict["x_start"])
 
-            # Hybrid waypoint loss with detached integral if kinematic_type is diff
+            # 2. Hybrid waypoint loss with detached integral (HDP Paper Eq. 3, 4 & Algorithm 1)
+            # Integrate predicted velocity (vx, vy) with DT_SECONDS=10.0 to get spatial waypoints
             if config.kinematic_type == "diff":
-                pred_x0 = (action_with_noise - diffusion_sde.sde.marginal_std(t)[:, None, None] * output.prediction) / diffusion_sde.sde.marginal_alpha(t)[:, None, None]
-                pred_wpt = detached_integral(pred_x0[..., :2], detach_window_size=3)
-                target_wpt = torch.cumsum(model_actions[..., :2], dim=-2)
+                pred_v = output.prediction[:, :, :2]
+                pred_wpt = detached_integral(pred_v, detach_window_size=3) * 10.0  # dt = 10.0s
                 loss_wpt = F.mse_loss(pred_wpt, target_wpt)
-                loss = loss_noise + 0.1 * loss_wpt
+                loss = loss_vel + 0.1 * loss_wpt
             else:
-                loss = loss_noise
+                loss = loss_vel
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()

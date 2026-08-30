@@ -31,7 +31,7 @@ def merge_scenarios():
     for d in source_dirs:
         print(f" - {d.name}")
 
-    total_copied = 0
+    total_moved = 0
 
     # Determine starting index from the first file found (e.g., 0 or 1)
     start_index = None
@@ -57,15 +57,24 @@ def merge_scenarios():
             else:
                 prefix, ext = "scenario_", f.suffix
 
-            current_num = start_index + total_copied
+            current_num = start_index + total_moved
             # Format number with 4-digit zero padding (or more if total > 9999)
             new_name = f"{prefix}{current_num:04d}{ext}"
             dest_file = dest_dir / new_name
 
-            shutil.copy2(f, dest_file)
-            total_copied += 1
+            # MOVE the file instead of copying it to save space
+            shutil.move(f, dest_file)
+            total_moved += 1
+            
+        # Optional Cleanup: Remove the source directory if it's now empty
+        try:
+            d.rmdir()
+            print(f"Cleaned up empty directory: {d.name}")
+        except OSError:
+            # Directory might not be empty if there were non-XML files inside
+            pass
 
-    print(f"\nSuccessfully copied {total_copied} files to '{dest_dir.name}/'.")
+    print(f"\nSuccessfully moved {total_moved} files to '{dest_dir.name}/'.")
 
 
 if __name__ == "__main__":
