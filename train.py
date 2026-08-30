@@ -21,7 +21,12 @@ from model import (
     NoiseScheduleVP,
     TimeSampler,
 )
-from utils import detached_integral, hybrid_loss, ExponentialMovingAverage
+from utils import (
+    detached_integral,
+    hybrid_loss,
+    ExponentialMovingAverage,
+    apply_maritime_augmentations,
+)
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
@@ -195,7 +200,9 @@ def main():
         model.train()
         epoch_loss = 0.0
 
-        for batch in loader:
+        for raw_batch in loader:
+            batch = apply_maritime_augmentations(raw_batch) if model.training else raw_batch
+
             ego_hist = batch["ego_history"].to(device, non_blocking=True)
             target_full = batch["ego_target"].to(device, non_blocking=True)
             agents = batch["agents_history"].to(device, non_blocking=True)

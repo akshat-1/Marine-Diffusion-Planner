@@ -70,6 +70,66 @@ def reward_weighted_diffusion_loss(
     return (weights * per_sample_loss).mean()
 
 
+def apply_maritime_augmentations(
+    batch: dict,
+    p_map_drop: float = 0.15,
+    p_agent_drop: float = 0.15,
+    p_flip: float = 0.50,
+    jitter_std: float = 1.5,
+) -> dict:
+    """Applies online domain-specific data augmentations for maritime diffusion training.
+
+    1. Coastline Dropout: Randomly masks map_mask with probability p_map_drop.
+    2. Agent Dropout: Randomly masks surround agents to simulate AIS packet drops.
+    3. Polyline Jitter: Adds Gaussian noise (1.5m) to coastline polyline vertices.
+    4. Reflection Flip: Mirrors port/starboard coordinates (y, vy, theta, yaw_rate).
+    """
+    ego_hist = batch["ego_history"].clone()
+    target_full = batch["ego_target"].clone()
+    agents = batch["agents_history"].clone()
+    map_lines = batch["map_lines"].clone()
+    agent_mask = batch["agent_mask"].clone()
+    map_mask = batch["map_mask"].clone()
+
+    B = ego_hist.shape[0]
+    device = ego_hist.device
+
+    # 1. Coastline Dropout (Open Sea conditioning)
+    map_drop = (torch.rand(B, device=device) < p_map_drop)
+    map_mask[map_drop] = True
+
+    # 2. Agent Dropout (AIS Packet Loss simulation)
+    agent_drop_rand = torch.rand(agent_mask.shape, device=device)
+    agent_mask = agent_mask | (agent_drop_rand < p_agent_drop)
+
+    # 3. Polyline Vertex Jittering (Tide & Map Noise)
+    if map_lines.numel() > 0 and jitter_std > 0:
+        map_lines = map_lines + torch.randn_like(map_lines) * jitter_std
+
+    # 4. Port/Starboard Reflection Flip (Open sea batches)
+    flip_mask = (torch.rand(B, device=device) < p_flip) & map_drop
+    if flip_mask.any():
+        for tensor in [ego_hist, target_full]:
+            tensor[flip_mask, :, 1] *= -1.0  # y
+            tensor[flip_mask, :, 3] *= -1.0  # vy
+            tensor[flip_mask, :, 4] *= -1.0  # theta
+            tensor[flip_mask, :, 5] *= -1.0  # yaw_rate
+
+        agents[flip_mask, ..., 1] *= -1.0
+        agents[flip_mask, ..., 3] *= -1.0
+        agents[flip_mask, ..., 4] *= -1.0
+        agents[flip_mask, ..., 5] *= -1.0
+
+    return {
+        "ego_history": ego_hist,
+        "ego_target": target_full,
+        "agents_history": agents,
+        "map_lines": map_lines,
+        "agent_mask": agent_mask,
+        "map_mask": map_mask,
+    }
+
+
 class ExponentialMovingAverage:
     """Exponential Moving Average (EMA) of model weights.
     Matches timm / HDP paper implementation (decay=0.999).
@@ -131,5 +191,6 @@ __all__ = [
     "detached_integral",
     "hybrid_loss",
     "reward_weighted_diffusion_loss",
+    "apply_maritime_augmentations",
     "ExponentialMovingAverage",
 ]

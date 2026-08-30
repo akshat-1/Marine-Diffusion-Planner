@@ -172,6 +172,19 @@
     \end{block}
 \end{frame}
 
+\begin{frame}{Domain-Specific Maritime Data Augmentations}
+    \begin{block}{Online Data Augmentation Pipeline (\texttt{apply\_maritime\_augmentations})}
+        Applied online during training to boost open-sea generalization and closed-loop stability:
+    \end{block}
+
+    \begin{itemize}
+        \item \textbf{Coastline Dropout ($p=0.15$)}: Randomly masks map geometry (\texttt{map\_mask = True}) to force the planner to learn open-sea COLREG navigation without over-relying on coastline landmarks.
+        \item \textbf{Agent Dropout ($p=0.15$)}: Randomly masks surround vessels to simulate real-world AIS packet drops and sensor latency.
+        \item \textbf{Polyline Vertex Jittering ($\sigma=1.5\text{m}$)}: Injects Gaussian noise into coastline vertices to simulate tide variations and map boundary uncertainty.
+        \item \textbf{Port/Starboard Reflection Flip ($p=0.50$)}: Mirrors open-sea batches ($y \to -y, v_y \to -v_y, \theta \to -\theta, r \to -r$) to double effective dataset size via spatial symmetry.
+    \end{itemize}
+\end{frame}
+
 % ==============================================================================
 % SECTION 3: HIGH-CAPACITY VECTOR SCENE ENCODER
 % ==============================================================================
