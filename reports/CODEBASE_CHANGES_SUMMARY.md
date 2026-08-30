@@ -27,10 +27,10 @@ CommonOcean stores vessel velocities in the vessel's local body frame (`state.ve
 
 #### Solution:
 In `_extract_state_features()`, body-frame velocities $(u, v)$ are first transformed into world Cartesian frame using vessel heading $\theta$:
-$$\begin{pmatrix} v_{x,\mathrm{world}} \\ v_{y,\mathrm{world}} \end{pmatrix} = \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} u \\ v \end{pmatrix}$$
+$$\begin{pmatrix} v_{x,\mathrm{world}} \\\\ v_{y,\mathrm{world}} \end{pmatrix} = \begin{pmatrix} \cos\theta & -\sin\theta \\\\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} u \\\\ v \end{pmatrix}$$
 
 Then `_transform_to_egocentric()` rotates $(v_{x,\mathrm{world}}, v_{y,\mathrm{world}})$ into Ego's relative body frame using $-\theta_{\mathrm{ego}}$:
-$$\begin{pmatrix} v_{x,\mathrm{rel}} \\ v_{y,\mathrm{rel}} \end{pmatrix} = \begin{pmatrix} \cos(-\theta_{\mathrm{ego}}) & -\sin(-\theta_{\mathrm{ego}}) \\ \sin(-\theta_{\mathrm{ego}}) & \cos(-\theta_{\mathrm{ego}}) \end{pmatrix} \begin{pmatrix} v_{x,\mathrm{world}} \\ v_{y,\mathrm{world}} \end{pmatrix}$$
+$$\begin{pmatrix} v_{x,\mathrm{rel}} \\\\ v_{y,\mathrm{rel}} \end{pmatrix} = \begin{pmatrix} \cos(-\theta_{\mathrm{ego}}) & -\sin(-\theta_{\mathrm{ego}}) \\\\ \sin(-\theta_{\mathrm{ego}}) & \cos(-\theta_{\mathrm{ego}}) \end{pmatrix} \begin{pmatrix} v_{x,\mathrm{world}} \\\\ v_{y,\mathrm{world}} \end{pmatrix}$$
 
 ---
 

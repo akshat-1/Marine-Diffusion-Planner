@@ -13,7 +13,7 @@ This document tracks identified codebase issues, architectural alignment with th
 #### 2. Velocity Transformation Double-Rotation (Critical)
 - **Status**: FIXED
 - **Details**: `preparedataset.py` converted body-frame surge/sway velocities to world-frame velocities prior to egocentric transformation:
-  $$\begin{pmatrix} v_{x,world} \\ v_{y,world} \end{pmatrix} = \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} u \\ v \end{pmatrix}$$
+  $$\begin{pmatrix} v_{x,\mathrm{world}} \\\\ v_{y,\mathrm{world}} \end{pmatrix} = \begin{pmatrix} \cos\theta & -\sin\theta \\\\ \sin\theta & \cos\theta \end{pmatrix} \begin{pmatrix} u \\\\ v \end{pmatrix}$$
 
 #### 3. Hybrid Waypoint Loss Timestep Scaling (High)
 - **Status**: FIXED
