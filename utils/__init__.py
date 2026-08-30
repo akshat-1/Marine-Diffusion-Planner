@@ -130,6 +130,32 @@ def apply_maritime_augmentations(
     }
 
 
+class ZScoreNormalizer(torch.nn.Module):
+    """Z-Score Standard Normalizer: z = (x - mean) / (std + eps).
+    Normalizes dataset feature tensors to zero mean and unit variance per HDP paper specification.
+    """
+
+    def __init__(self, mean, std, eps: float = 1e-6):
+        super().__init__()
+        mean_t = torch.tensor(mean, dtype=torch.float32) if not isinstance(mean, torch.Tensor) else mean
+        std_t = torch.tensor(std, dtype=torch.float32) if not isinstance(std, torch.Tensor) else std
+        self.register_buffer("mean", mean_t)
+        self.register_buffer("std", std_t)
+        self.eps = eps
+
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        """Z-Score normalization: (x - mean) / (std + eps)."""
+        m = self.mean.to(device=x.device, dtype=x.dtype)
+        s = self.std.to(device=x.device, dtype=x.dtype)
+        return (x - m) / (s + self.eps)
+
+    def unnormalize(self, z: torch.Tensor) -> torch.Tensor:
+        """Inverse Z-Score transform: z * std + mean."""
+        m = self.mean.to(device=z.device, dtype=z.dtype)
+        s = self.std.to(device=z.device, dtype=z.dtype)
+        return z * (s + self.eps) + m
+
+
 class ExponentialMovingAverage:
     """Exponential Moving Average (EMA) of model weights.
     Matches timm / HDP paper implementation (decay=0.999).
@@ -193,4 +219,5 @@ __all__ = [
     "reward_weighted_diffusion_loss",
     "apply_maritime_augmentations",
     "ExponentialMovingAverage",
+    "ZScoreNormalizer",
 ]

@@ -335,6 +335,26 @@
     \end{block}
 \end{frame}
 
+\begin{frame}{Feature Normalization: Z-Score Standard Normalization}
+    \begin{block}{Z-Score Normalization Formula (\texttt{ZScoreNormalizer})}
+        Per HDP paper specification, input features and targets are normalized to zero mean and unit variance prior to diffusion:
+        $$z = \frac{x - \mu}{\sigma + \epsilon}, \quad \text{Inverse: } x = z \cdot (\sigma + \epsilon) + \mu$$
+    \end{block}
+
+    \begin{block}{Feature Channel Normalization Statistics}
+        \begin{itemize}
+            \item \textbf{Ego/Agent State Features} $[x, y, v_x, v_y, \theta, r]$:
+              $$\mu_{\mathrm{state}} = [0, 0, 3.5, 0, 0, 0], \quad \sigma_{\mathrm{state}} = [100.0, 100.0, 3.0, 1.0, 1.0, 0.05]$$
+            \item \textbf{Coastline Polyline Points} $[x, y]$:
+              $$\mu_{\mathrm{map}} = [0, 0], \quad \sigma_{\mathrm{map}} = [2000.0, 2000.0]$$
+        \end{itemize}
+    \end{block}
+
+    \begin{itemize}
+        \item Prevents feature scale dominance (e.g. 2000m coastline coords vs 0.05 rad/s yaw rate).
+    \end{itemize}
+\end{frame}
+
 % ==============================================================================
 % SECTION 6: CPU CLUSTER DISTRIBUTED SCALING
 % ==============================================================================

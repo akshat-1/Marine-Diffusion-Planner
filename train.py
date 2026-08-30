@@ -26,6 +26,7 @@ from utils import (
     hybrid_loss,
     ExponentialMovingAverage,
     apply_maritime_augmentations,
+    ZScoreNormalizer,
 )
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -145,6 +146,17 @@ def main():
     raw_model = model.module if is_distributed else model
     ema = ExponentialMovingAverage(raw_model, decay=0.999)
 
+    # Feature Z-Score Normalizers (HDP Paper Specification)
+    # [x, y, vx, vy, theta, yaw_rate]
+    state_normalizer = ZScoreNormalizer(
+        mean=[0.0, 0.0, 3.5, 0.0, 0.0, 0.0],
+        std=[100.0, 100.0, 3.0, 1.0, 1.0, 0.05],
+    ).to(device)
+    map_normalizer = ZScoreNormalizer(
+        mean=[0.0, 0.0],
+        std=[2000.0, 2000.0],
+    ).to(device)
+
     # Official VP SDE & Noise Schedule setup
     alphas_cumprod = torch.cos(((torch.linspace(0, 1000, 1001) / 1000) + 0.008) / 1.008 * 3.141592653589793 * 0.5) ** 2
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
@@ -219,10 +231,11 @@ def main():
         for raw_batch in loader:
             batch = apply_maritime_augmentations(raw_batch) if model.training else raw_batch
 
-            ego_hist = batch["ego_history"].to(device, non_blocking=True)
-            target_full = batch["ego_target"].to(device, non_blocking=True)
-            agents = batch["agents_history"].to(device, non_blocking=True)
-            map_lines = batch["map_lines"].to(device, non_blocking=True)
+            # Apply Z-score Normalization (HDP Paper specification)
+            ego_hist = state_normalizer.normalize(batch["ego_history"].to(device, non_blocking=True))
+            target_full = state_normalizer.normalize(batch["ego_target"].to(device, non_blocking=True))
+            agents = state_normalizer.normalize(batch["agents_history"].to(device, non_blocking=True))
+            map_lines = map_normalizer.normalize(batch["map_lines"].to(device, non_blocking=True))
             agent_mask = batch["agent_mask"].to(device, non_blocking=True)
             map_mask = batch["map_mask"].to(device, non_blocking=True)
 
