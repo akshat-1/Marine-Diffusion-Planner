@@ -21,7 +21,10 @@ from model import (
     NoiseScheduleVP,
     TimeSampler,
 )
-from utils import detached_integral, hybrid_loss
+from utils import detached_integral, hybrid_loss, ExponentialMovingAverage
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 
 
 def waypoint_to_diff(actions: torch.Tensor) -> torch.Tensor:
@@ -39,7 +42,7 @@ def diff_to_waypoint(actions: torch.Tensor) -> torch.Tensor:
 
 
 def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
-                 max_agents=10, max_polylines=20, num_workers=4):
+                 max_agents=10, max_polylines=20, num_workers=4, is_distributed=False):
     dataset = AISScenarioDataset(
         scenario_dir=scenario_dir,
         obs_frames=obs_frames,
@@ -47,15 +50,17 @@ def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
         max_agents=max_agents,
         max_polylines=max_polylines,
     )
+    sampler = DistributedSampler(dataset) if is_distributed else None
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(sampler is None),
+        sampler=sampler,
         drop_last=True,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
     )
-    return dataset, loader
+    return dataset, loader, sampler
 
 
 def main():
@@ -67,16 +72,32 @@ def main():
     BATCH_SIZE = 32
     EPOCHS = 100
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # DDP & CPU Cluster Configuration
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    is_distributed = world_size > 1
+
+    if is_distributed:
+        backend = "gloo" if not torch.cuda.is_available() else "nccl"
+        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            device = torch.device("cuda", local_rank)
+        else:
+            device = torch.device("cpu")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1. Build Data Pipeline
-    dataset, loader = build_loader(
+    dataset, loader, sampler = build_loader(
         SCENARIO_DIR,
         batch_size=BATCH_SIZE,
         obs_frames=OBS_FRAMES,
         pred_frames=PRED_FRAMES,
         max_agents=MAX_AGENTS,
         max_polylines=MAX_POLYLINES,
+        is_distributed=is_distributed,
     )
 
     # 2. Build Model & Diffusion SDE (matching official HDP / DP-VLA config)
@@ -93,6 +114,15 @@ def main():
     )
 
     model = DpVlaModel(config).to(device)
+
+    if is_distributed:
+        if device.type == "cuda":
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        else:
+            model = DDP(model)
+
+    raw_model = model.module if is_distributed else model
+    ema = ExponentialMovingAverage(raw_model, decay=0.999)
 
     # Official VP SDE & Noise Schedule setup
     alphas_cumprod = torch.cos(((torch.linspace(0, 1000, 1001) / 1000) + 0.008) / 1.008 * 3.141592653589793 * 0.5) ** 2
@@ -146,7 +176,9 @@ def main():
         # map_location=device prevents GPU/CPU memory conflicts if hardware changed
         checkpoint = torch.load(checkpoint_path, map_location=device)
         
-        model.load_state_dict(checkpoint["model"])
+        raw_model.load_state_dict(checkpoint["model"])
+        if "ema" in checkpoint:
+            ema.load_state_dict(checkpoint["ema"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         
         start_epoch = checkpoint["epoch"]
@@ -158,6 +190,8 @@ def main():
         print("No valid checkpoint found. Starting training from scratch (Epoch 0).")
 
     for epoch in range(start_epoch, EPOCHS):
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
 
@@ -218,17 +252,20 @@ def main():
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
+            ema.update(raw_model)
 
             epoch_loss += loss.item()
 
         avg_loss = epoch_loss / max(len(loader), 1)
-        print(f"Epoch {epoch + 1}/{EPOCHS} | loss={avg_loss:.6f}")
+        if rank == 0:
+            print(f"Epoch {epoch + 1}/{EPOCHS} | loss={avg_loss:.6f} | lr={scheduler.get_last_lr()[0]:.6e}")
 
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 10 == 0 and rank == 0:
             os.makedirs("weight", exist_ok=True)
             torch.save({
                 "epoch": epoch + 1,
-                "model": model.state_dict(),
+                "model": raw_model.state_dict(),
+                "ema": ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "loss": avg_loss,
             }, f"weight/checkpoint_epoch_{epoch + 1}.pt")

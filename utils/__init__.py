@@ -70,6 +70,58 @@ def reward_weighted_diffusion_loss(
     return (weights * per_sample_loss).mean()
 
 
+class ExponentialMovingAverage:
+    """Exponential Moving Average (EMA) of model weights.
+    Matches timm / HDP paper implementation (decay=0.999).
+    """
+
+    def __init__(self, model: torch.nn.Module, decay: float = 0.999):
+        self.decay = decay
+        self.shadow = {
+            name: param.clone().detach()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+        self.backup = {}
+
+    def update(self, model: torch.nn.Module) -> None:
+        """Update shadow weights after an optimizer step."""
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad and name in self.shadow:
+                    new_val = param.detach()
+                    self.shadow[name].copy_(
+                        self.decay * self.shadow[name] + (1.0 - self.decay) * new_val
+                    )
+
+    def apply_shadow(self, model: torch.nn.Module) -> None:
+        """Substitute model weights with shadow EMA weights (for eval / save)."""
+        self.backup = {
+            name: param.clone().detach()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad and name in self.shadow:
+                    param.copy_(self.shadow[name])
+
+    def restore(self, model: torch.nn.Module) -> None:
+        """Restore original training weights after eval."""
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad and name in self.backup:
+                    param.copy_(self.backup[name])
+        self.backup = {}
+
+    def state_dict(self) -> dict:
+        return {"decay": self.decay, "shadow": self.shadow}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        self.decay = state_dict["decay"]
+        self.shadow = state_dict["shadow"]
+
+
 __all__ = [
     "DPM_Solver",
     "NoiseScheduleVP",
@@ -79,4 +131,5 @@ __all__ = [
     "detached_integral",
     "hybrid_loss",
     "reward_weighted_diffusion_loss",
+    "ExponentialMovingAverage",
 ]

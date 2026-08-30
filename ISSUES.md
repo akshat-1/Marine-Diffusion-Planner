@@ -32,7 +32,15 @@ This document tracks identified codebase issues, architectural alignment with th
 - **Status**: FIXED
 - **Details**: Filtered sliding windows in `_build_index_map()` where displacement between $t_{start}$ and $t_{anchor}$ exceeds $8000.0$ meters.
 
-#### 7. LR Scheduler & Warmup (Medium)
+#### 7. Exponential Moving Average (EMA) Weights & Checkpointing (High)
+- **Status**: FIXED
+- **Details**: Added `ExponentialMovingAverage` (decay=0.999 per paper/timm) in `utils/__init__.py`. `train.py` continuously updates EMA shadow weights during training and saves `ema` state dictionary in checkpoints.
+
+#### 8. CPU Cluster Distributed Training (DDP / Gloo) (High)
+- **Status**: FIXED
+- **Details**: Added PyTorch DDP launcher support in `train.py`. Automatically uses the `gloo` backend for CPU cluster nodes (and `nccl` for CUDA GPUs), with `DistributedSampler` managing data partition across cluster ranks.
+
+#### 9. LR Scheduler & Warmup (Medium)
 - **Status**: FIXED
 - **Details**: Added `torch.optim.lr_scheduler.OneCycleLR` with 5% warmup and cosine decay in `train.py`.
 
