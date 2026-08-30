@@ -20,7 +20,7 @@ Applying domain-specific data augmentations improves generalization, open-sea ro
 ### 2.1 Coastline / Map Augmentations
 
 #### A. Coastline Dropout (Open-Sea Conditioning)
-- **Concept**: Randomly mask out coastline data (`map_mask = True`) with probability $p_{\text{map\_drop}} \in [0.10, 0.20]$ during training.
+- **Concept**: Randomly mask out coastline data (`map_mask = True`) with probability $p_{\mathrm{map\_drop}} \in [0.10, 0.20]$ during training.
 - **Rationale**: Forces the diffusion planner to learn valid open-sea navigation and COLREG compliance using vessel dynamics alone, without over-depending on coastline geometry.
 - **Implementation**:
   ```python
