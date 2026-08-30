@@ -11,7 +11,7 @@ Aligned with official HDP-navsim DP-VLA base architecture and diffusion pipeline
 import os
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from preparedataset import AISScenarioDataset
 from model import (
@@ -47,7 +47,8 @@ def diff_to_waypoint(actions: torch.Tensor) -> torch.Tensor:
 
 
 def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
-                 max_agents=10, max_polylines=20, num_workers=4, is_distributed=False):
+                 max_agents=10, max_polylines=20, num_workers=4, is_distributed=False,
+                 use_stratified_sampling=True):
     dataset = AISScenarioDataset(
         scenario_dir=scenario_dir,
         obs_frames=obs_frames,
@@ -55,7 +56,22 @@ def build_loader(scenario_dir, batch_size=32, obs_frames=20, pred_frames=20,
         max_agents=max_agents,
         max_polylines=max_polylines,
     )
-    sampler = DistributedSampler(dataset) if is_distributed else None
+    if is_distributed:
+        sampler = DistributedSampler(dataset)
+    elif use_stratified_sampling:
+        weights = []
+        for item in dataset.index_map:
+            cat = item.get('category', 'coastal')
+            if cat == 'opensea':
+                weights.append(2.0)   # Upweight rare open-sea scenarios
+            elif cat == 'congested':
+                weights.append(1.0)   # Standard weight for port scenarios
+            else:
+                weights.append(1.2)   # Coastal transit
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    else:
+        sampler = None
+
     loader = DataLoader(
         dataset,
         batch_size=batch_size,

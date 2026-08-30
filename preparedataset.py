@@ -57,10 +57,19 @@ class AISScenarioDataset(Dataset):
                     disp = np.hypot(p0[0] - p_curr[0], p0[1] - p_curr[1])
                     if disp > 8000.0:  # Skip windows with excessive position jump > 8km
                         continue
+                    fname = os.path.basename(file_path).lower()
+                    if 'opensea' in fname:
+                        category = 'opensea'
+                    elif 'congested' in fname:
+                        category = 'congested'
+                    else:
+                        category = 'coastal'
+
                     self.index_map.append({
                         'file_path': file_path,
                         'ego_id': ship.obstacle_id,
-                        'start_frame': start_frame
+                        'start_frame': start_frame,
+                        'category': category,
                     })
                     
         print(f"Dataset ready: {len(self.index_map)} total tensors generated from {valid_file_count} valid scenarios (out of {len(self.scenario_files)} files).")
