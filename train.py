@@ -111,18 +111,32 @@ def main():
         denoise_to_zero=False,
     )
 
-    # 3. Optimizer
+    # 3. Optimizer, LR Scheduler & AMP Scaler
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=5e-4,
         weight_decay=0.01,
     )
 
+    total_steps = EPOCHS * len(loader)
+    warmup_steps = int(total_steps * 0.05)  # 5% warmup steps per paper
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=5e-4,
+        total_steps=max(total_steps, 1),
+        pct_start=0.05,
+        anneal_strategy="cos",
+    )
+
+    use_amp = torch.cuda.is_available()
+    device_type = "cuda" if use_amp else "cpu"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
     print(f"Device: {device}")
     print(f"Training samples: {len(dataset)}")
     print(f"Batches per epoch: {len(loader)}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-    print(f"Kinematic type: {config.kinematic_type}, Model type: {config.model_type}")
+    print(f"Kinematic type: {config.kinematic_type}, Model type: {config.model_type}, AMP enabled: {use_amp}")
 
     start_epoch = 0
     checkpoint_path = "weight/checkpoint_epoch_10.pt"  # Set to None or empty string to train from scratch
@@ -174,32 +188,36 @@ def main():
             # Encode context
             enc_out = model.fallback_encoder(ego_hist, agents, map_lines, agent_mask, map_mask)
 
-            # Predict x_start (clean velocity actions tau0_v) directly
-            output = model(
-                action_with_noise=action_with_noise,
-                time=t,
-                proprio=proprio,
-                encoder_hidden_states=enc_out.last_hidden_state,
-                attention_mask=enc_out.attention_mask,
-            )
+            # Predict x_start (clean velocity actions tau0_v) directly with mixed precision
+            with torch.amp.autocast(device_type, enabled=use_amp):
+                output = model(
+                    action_with_noise=action_with_noise,
+                    time=t,
+                    proprio=proprio,
+                    encoder_hidden_states=enc_out.last_hidden_state,
+                    attention_mask=enc_out.attention_mask,
+                )
 
-            # 1. Supervised tau0 diffusion loss on velocity representation (HDP Paper Eq. 3)
-            loss_vel = F.mse_loss(output.prediction, target_dict["x_start"])
+                # 1. Supervised tau0 diffusion loss on velocity representation (HDP Paper Eq. 3)
+                loss_vel = F.mse_loss(output.prediction.float(), target_dict["x_start"].float())
 
-            # 2. Hybrid waypoint loss with detached integral (HDP Paper Eq. 3, 4 & Algorithm 1)
-            # Integrate predicted velocity (vx, vy) with DT_SECONDS=10.0 to get spatial waypoints
-            if config.kinematic_type == "diff":
-                pred_v = output.prediction[:, :, :2]
-                pred_wpt = detached_integral(pred_v, detach_window_size=3) * 10.0  # dt = 10.0s
-                loss_wpt = F.mse_loss(pred_wpt, target_wpt)
-                loss = loss_vel + 0.1 * loss_wpt
-            else:
-                loss = loss_vel
+                # 2. Hybrid waypoint loss with detached integral (HDP Paper Eq. 3, 4 & Algorithm 1)
+                # Integrate predicted velocity (vx, vy) with DT_SECONDS=10.0 to get spatial waypoints
+                if config.kinematic_type == "diff":
+                    pred_v = output.prediction.float()[:, :, :2]
+                    pred_wpt = detached_integral(pred_v, detach_window_size=3) * 10.0  # dt = 10.0s
+                    loss_wpt = F.mse_loss(pred_wpt, target_wpt.float())
+                    loss = loss_vel + 0.1 * loss_wpt
+                else:
+                    loss = loss_vel
 
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
 
             epoch_loss += loss.item()
 

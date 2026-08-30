@@ -44,12 +44,19 @@ class AISScenarioDataset(Dataset):
             for ship in moving_ships:
                 # Get the length of this specific ship's trajectory
                 # Add 1 because initial_state is the first frame, prediction holds the rest
-                traj_length = len(ship.prediction.trajectory.state_list) + 1
+                ship_states = [ship.initial_state] + ship.prediction.trajectory.state_list
+                traj_length = len(ship_states)
                 
                 # Calculate how many full sliding windows fit in this trajectory
                 valid_windows = traj_length - self.window_size + 1
                 
                 for start_frame in range(valid_windows):
+                    t_curr = start_frame + self.obs_frames - 1
+                    p0 = ship_states[start_frame].position
+                    p_curr = ship_states[t_curr].position
+                    disp = np.hypot(p0[0] - p_curr[0], p0[1] - p_curr[1])
+                    if disp > 8000.0:  # Skip windows with excessive position jump > 8km
+                        continue
                     self.index_map.append({
                         'file_path': file_path,
                         'ego_id': ship.obstacle_id,
@@ -77,6 +84,23 @@ class AISScenarioDataset(Dataset):
             theta, 
             state.yaw_rate
         ])
+
+    def _resample_vertices(self, vertices, n_points=20):
+        """Resample polygon vertices to uniform arc-length spacing."""
+        if len(vertices) <= n_points:
+            return vertices
+        deltas = np.sqrt(np.sum(np.diff(vertices, axis=0) ** 2, axis=1))
+        cum_len = np.insert(np.cumsum(deltas), 0, 0)
+        total = cum_len[-1]
+        if total < 1e-6:
+            return vertices[:n_points]
+        target_dists = np.linspace(0, total, n_points)
+        resampled = np.zeros((n_points, 2), dtype=np.float64)
+        for i, d in enumerate(target_dists):
+            idx = min(np.searchsorted(cum_len, d, side='right') - 1, len(deltas) - 1)
+            t = (d - cum_len[idx]) / max(deltas[idx], 1e-9)
+            resampled[i] = vertices[idx] + t * (vertices[idx + 1] - vertices[idx])
+        return resampled
 
     def _transform_to_egocentric(self, features, ego_x, ego_y, ego_theta):
         """Applies translation and rotation to center the scene on the ego vessel."""
@@ -193,8 +217,9 @@ class AISScenarioDataset(Dataset):
                 vertices = np.array(vertices)
             
             map_mask[line_idx] = False
-            # Truncate or pad vertices to fixed length (e.g., 20)
-            num_pts = min(len(vertices), 20)
+            # Resample vertices uniformly to fixed length (20 points)
+            vertices = self._resample_vertices(vertices, n_points=20)
+            num_pts = len(vertices)
             for i in range(num_pts):
                 raw_feats = np.array([vertices[i][0], vertices[i][1], 0, 0, 0, 0])
                 rel_feats = self._transform_to_egocentric(raw_feats, ego_x, ego_y, ego_theta)
