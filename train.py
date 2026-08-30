@@ -249,9 +249,14 @@ def main():
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
+            scale_after = scaler.get_scale()
+            if scale_before <= scale_after:
+                scheduler.step()
+
             ema.update(raw_model)
 
             epoch_loss += loss.item()

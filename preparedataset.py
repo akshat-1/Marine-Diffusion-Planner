@@ -127,7 +127,11 @@ class AISScenarioDataset(Dataset):
 
     def __getitem__(self, idx):
         mapping = self.index_map[idx]
-        scenario, _ = CommonOceanFileReader(mapping['file_path']).open()
+        try:
+            scenario, _ = CommonOceanFileReader(mapping['file_path']).open()
+        except Exception as e:
+            # Fallback to next sample if XML reading fails during DataLoader worker execution
+            return self.__getitem__((idx + 1) % len(self.index_map))
         
         ego_id = mapping['ego_id']
         t_start = mapping['start_frame']
