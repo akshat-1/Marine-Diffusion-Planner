@@ -154,26 +154,85 @@ rclone copy gdrive:generated_scenarios /home/akshat/all_scenarios -P --transfers
 
 ---
 
-### Step 3.3: Distribute Data across Cluster
+### Step 3.3: Storage Protection & Zero-Disk-Duplication Strategies (For Huge Datasets)
 
-#### Strategy 1: Download once on Node 0 (Master), Sync to Workers via `rsync`
-Download on Node 0 first, then sync to worker nodes:
+When dealing with 100GB+ datasets or 500,000+ XML files, **copying the dataset to every worker node will quickly exhaust disk space**. Use one of the following production strategies:
+
+---
+
+#### 🌟 STRATEGY 1: NFS Central Storage (RECOMMENDED — 0 GB Extra Worker Disk Footprint)
+Download the dataset **ONLY ONCE on Node 0 (Master)**. Worker nodes mount the Master's dataset directory over the network. Worker nodes consume **0 GB of local disk space**.
+
+##### Step A: Configure NFS Server on Node 0 (Master)
 ```bash
-# From Node 0 (Master):
-rsync -avzP /home/akshat/all_scenarios/ akshat@node1:/home/akshat/all_scenarios/
-rsync -avzP /home/akshat/all_scenarios/ akshat@node2:/home/akshat/all_scenarios/
+# 1. Install NFS server package
+sudo apt update && sudo apt install -y nfs-kernel-server   # Ubuntu/Debian
+# OR: sudo pacman -S nfs-utils                             # Arch Linux
+
+# 2. Export dataset directory in /etc/exports
+sudo mkdir -p /home/akshat/all_scenarios
+echo "/home/akshat/all_scenarios *(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/exports
+
+# 3. Export and restart NFS server
+sudo exportfs -a
+sudo systemctl restart nfs-kernel-server
 ```
 
-#### Strategy 2: Download once on Node 0 (Master), Share via NFS
-Mount an NFS share at `/mnt/nfs_scenarios` across all nodes so all worker processes read from a single shared drive.
+##### Step B: Mount NFS Directory on Worker Nodes (Node 1, Node 2...)
+```bash
+# On EVERY worker node:
+sudo apt install -y nfs-common   # Ubuntu/Debian
+# OR: sudo pacman -S nfs-utils   # Arch Linux
+
+mkdir -p /home/akshat/all_scenarios
+
+# Mount Node 0's dataset folder locally (substitute 192.168.1.100 with Master IP)
+sudo mount -t nfs -o soft,intr,rsize=8192,wsize=8192 192.168.1.100:/home/akshat/all_scenarios /home/akshat/all_scenarios
+
+# Make mount permanent across worker reboots (add to /etc/fstab):
+echo "192.168.1.100:/home/akshat/all_scenarios /home/akshat/all_scenarios nfs soft,intr,rsize=8192,wsize=8192 0 0" | sudo tee -a /etc/fstab
+```
+
+> **Disk Usage Result**: Worker nodes use **0 GB** of local storage. DataLoader workers read XML files on demand over the fast network interface.
+
+---
+
+#### 🌟 STRATEGY 2: Keep Dataset as Compressed ZIP Archive (Saves 80% Space & Inodes)
+Storing 500,000 individual XML files exhausts filesystem inode limits and wastes cluster disk space. Keep the dataset compressed as `scenarios.zip` (or `scenarios.tar.zst`).
+
+Python's `commonocean-io` can read directly from in-memory zip streams:
+```python
+# In preparedataset.py:
+import zipfile
+
+with zipfile.ZipFile("/home/akshat/scenarios.zip", "r") as zf:
+    with zf.open("scenario_0001.xml") as xml_file:
+        scenario = CommonOceanFileReader(xml_file).open()
+```
+This saves ~80% disk space and prevents worker disk exhaustion.
+
+---
+
+#### 🌟 STRATEGY 3: Dataset Sharding Across Workers (If NFS is Unavailable)
+If NFS cannot be used and worker disk space is limited, split the dataset into $N$ equal shards so each worker node only stores its fraction ($\frac{1}{N}$) of the dataset:
+
+```bash
+# On Node 0 (Master): split scenarios into 2 equal parts
+mkdir -p /home/akshat/shard_node0 /home/akshat/shard_node1
+ls /home/akshat/all_scenarios/*.xml | head -n 200000 | xargs -I {} mv {} /home/akshat/shard_node0/
+ls /home/akshat/all_scenarios/*.xml | xargs -I {} mv {} /home/akshat/shard_node1/
+
+# Transfer only Shard 1 to Worker 1 (uses 50% less space on worker)
+rsync -avzP /home/akshat/shard_node1/ akshat@node1:/home/akshat/all_scenarios/
+```
 
 ---
 
 ### Step 3.4: Synchronize Code Repository
-From **Node 0 (Master)**, sync the project codebase to all worker nodes:
+From **Node 0 (Master)**, sync the lightweight project codebase to all worker nodes (only a few megabytes):
 ```bash
-rsync -avzP --exclude '.venv' /home/akshat/Documents/Diffusion/ akshat@node1:/home/akshat/Documents/Diffusion/
-rsync -avzP --exclude '.venv' /home/akshat/Documents/Diffusion/ akshat@node2:/home/akshat/Documents/Diffusion/
+rsync -avzP --exclude '.venv' --exclude 'all_scenarios' /home/akshat/Documents/Diffusion/ akshat@node1:/home/akshat/Documents/Diffusion/
+rsync -avzP --exclude '.venv' --exclude 'all_scenarios' /home/akshat/Documents/Diffusion/ akshat@node2:/home/akshat/Documents/Diffusion/
 ```
 
 ---
