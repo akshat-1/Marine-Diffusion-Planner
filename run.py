@@ -75,6 +75,19 @@ LOCAL_RAW_DOWNLOADS_DIR = os.path.join(SCRIPT_DIR, "raw_ais_downloads")
 LOCAL_FORMATTED_DIR = os.path.join(SCRIPT_DIR, "formatted_zst_temp")
 LOCAL_SCENARIOS_DIR = os.path.join(SCRIPT_DIR, "generated_scenarios_temp")
 
+# Thread-safe global scenario counter to guarantee zero filename conflicts and continuous numbering
+GLOBAL_SCENARIO_COUNTER = 0
+COUNTER_LOCK = threading.Lock()
+
+
+def get_next_scenario_index_range(batch_count: int) -> int:
+    """Thread-safely acquires a continuous global scenario index range."""
+    global GLOBAL_SCENARIO_COUNTER
+    with COUNTER_LOCK:
+        start_idx = GLOBAL_SCENARIO_COUNTER
+        GLOBAL_SCENARIO_COUNTER += batch_count
+        return start_idx
+
 
 def ensure_coastline_shapefile() -> str:
     """Ensures global coastline shapefile is downloaded and available locally."""
@@ -239,11 +252,38 @@ def process_file_worker(
             log.warning(f"   Could not remove {formatted_path}: {e}")
 
     # -----------------------------------------------------------------------
-    # Step 6: Upload Generated CommonOcean XML Scenarios to Google Drive
+    # Step 6: Assign Globally Unique Continuous Scenario Names & Upload XMLs
     # -----------------------------------------------------------------------
-    generated_xml_files = glob.glob(os.path.join(thread_scenarios_dir, "*.xml"))
-    log.info(f"📤 [{thread_name}] Step 6/7: Uploading {len(generated_xml_files)} generated XML scenarios to Google Drive...")
+    generated_xml_files = sorted(glob.glob(os.path.join(thread_scenarios_dir, "*.xml")))
+    log.info(f"📤 [{thread_name}] Step 6/7: Preparing {len(generated_xml_files)} generated XML scenarios for non-conflicting upload...")
 
+    renamed_xml_files = []
+    if generated_xml_files:
+        start_global_idx = get_next_scenario_index_range(len(generated_xml_files))
+        end_global_idx = start_global_idx + len(generated_xml_files) - 1
+        log.info(f"🔢 [{thread_name}] Assigned continuous global index range: scenario_{start_global_idx:06d}.xml $\\rightarrow$ scenario_{end_global_idx:06d}.xml")
+
+        for j, xml_file in enumerate(generated_xml_files):
+            global_idx = start_global_idx + j
+            new_scenario_id = f"scenario_{global_idx:06d}"
+            new_xml_name = f"{new_scenario_id}.xml"
+            new_xml_path = os.path.join(thread_scenarios_dir, new_xml_name)
+
+            # Update internal CommonOcean XML scenarioId attribute
+            try:
+                with open(xml_file, 'r', encoding='utf-8') as f:
+                    xml_content = f.read()
+                updated_content = re.sub(r'scenarioId="[^"]+"', f'scenarioId="{new_scenario_id}"', xml_content)
+                with open(new_xml_path, 'w', encoding='utf-8') as f:
+                    f.write(updated_content)
+                if xml_file != new_xml_path and os.path.exists(xml_file):
+                    os.remove(xml_file)
+                renamed_xml_files.append(new_xml_path)
+            except Exception as e:
+                log.warning(f"⚠️ Notice updating XML scenarioId attribute ({xml_file}): {e}")
+                renamed_xml_files.append(xml_file)
+
+    generated_xml_files = renamed_xml_files
     scenarios_gdrive_folder_id = extract_gdrive_id(scenarios_gdrive_url)
     uploaded_count = 0
 
