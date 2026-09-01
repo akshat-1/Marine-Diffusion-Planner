@@ -193,7 +193,7 @@
         $$\begin{aligned}
         m &= \rho_w \cdot C_b \cdot L \cdot B \cdot d, \quad m_x = 0.05 \cdot m \\
         m_y &= \rho_w \cdot \frac{\pi}{2} \cdot d^2 \cdot L \cdot \left(1 + 0.4 \frac{B}{L}\right) \\
-        I_z &= m \cdot (0.25 L)^2, \quad J_z = 0.025 \cdot m_y \cdot L^2
+        I_z &= m \cdot (0.25 L)^2, \quad J_z = \frac{1}{12} \cdot m_y \cdot L^2
         \end{aligned}$$
     \end{block}
 
@@ -271,7 +271,7 @@
     Surge Added Mass & $m_x / m$ & $0.05$ & 5\% entrained water mass along hull longitudinal \\
     Sway Added Mass & $m_y$ & Formula & $\rho_w \frac{\pi}{2} d^2 L \left(1 + 0.4 \frac{B}{L}\right)$ (Norrbin expansion) \\
     Yaw Moment Radius & $k_z / L$ & $0.25$ & Gyration radius ($I_z = m (0.25 L)^2$) \\
-    Yaw Added Moment & $J_z / (m L^2)$ & $0.025$ & Added inertia moment ratio \\
+    Yaw Added Moment & $J_z / (m_y L^2)$ & $1/12$ & Hydrodynamic strip theory added yaw inertia ratio \\
     Surge Drag Coeff. & $C_{dx}$ & $0.03$ & Longitudinal hull friction/wave resistance \\
     Sway Drag Coeff. & $C_{dy}$ & $0.80$ & Transverse cross-flow drag coefficient \\
     Frontal Windage Area & $A_T$ & $0.8 B^2$ & Superstructure frontal wind area estimate \\
@@ -339,7 +339,7 @@
         \tikzstyle{trans} = [rectangle, draw, fill=blue!15, text width=2.6cm, text centered, rounded corners, minimum height=1.0cm, font=\scriptsize\bfseries]
         \tikzstyle{fused} = [rectangle, draw, fill=green!20, text width=8.5cm, text centered, rounded corners, minimum height=1.0cm, font=\small\bfseries]
 
-        \node [sub] (ego) {Ego Sub-Encoder\\Linear(6$\to$512) + PosEmb};
+        \node [sub] (ego) {Ego Sub-Encoder\\Linear(10$\to$512) + PosEmb};
         \node [sub, right=0.5cm of ego] (agent) {Agent Sub-Encoder\\1D Temporal Trans + Pool};
         \node [sub, right=0.5cm of agent] (map) {Map Sub-Encoder\\5D Point-Polyline Trans};
 
@@ -360,7 +360,7 @@
 
 \begin{frame}{Sub-Encoder Specifications}
     \begin{block}{1. Ego Trajectory Sub-Encoder}
-        $$\mathbf{E}_{\text{ego}} = \mathrm{Linear}_{6 \to 512}(\mathbf{X}_{\text{ego}}) + \mathbf{P}_{\text{ego}} + \mathbf{T}_{\text{type}}(0)$$
+        $$\mathbf{E}_{\text{ego}} = \mathrm{Linear}_{10 \to 512}(\mathbf{X}_{\text{ego}}) + \mathbf{P}_{\text{ego}} + \mathbf{T}_{\text{type}}(0)$$
         Yields $T_{\text{obs}} = 20$ tokens representing Ego's kinematics.
     \end{block}
 
@@ -568,7 +568,7 @@
     \textbf{Module Path} & \textbf{Component} & \textbf{Parameter Count} \\
     \midrule
     \texttt{fallback\_encoder} & HighCapacityVectorSceneEncoder & \textbf{27,559,424} \\
-    \quad \texttt{ego\_feature\_proj} & Linear + PosEmb & $70,144$ \\
+    \quad \texttt{ego\_feature\_proj} & Linear(10$\to$512) + PosEmb & $77,696$ \\
     \quad \texttt{agent\_temporal\_trans} & 2-Layer Transformer & $4,204,544$ \\
     \quad \texttt{map\_point\_trans} & 2-Layer Point-Polyline Trans & $4,204,032$ \\
     \quad \texttt{scene\_transformer} & 6-Layer Multimodal Backbone & $18,917,888$ \\
