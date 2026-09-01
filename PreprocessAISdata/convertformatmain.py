@@ -5,8 +5,10 @@ import logging
 import glob
 import gc
 import re
+import time
 import argparse
 import pyarrow.csv as pv
+import pyarrow as pa
 from collections import Counter
 
 import numpy as np
@@ -34,8 +36,13 @@ try:
 except ImportError:
     GoogleDrive = None
 
-# Force console logging
-logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
+# Force console logging with timestamps and DEBUG visibility
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="[%(asctime)s][%(levelname)s][%(name)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
 log = logging.getLogger("ais_formatter")
 
 # ---------------------------------------------------------------------------
@@ -51,9 +58,9 @@ def extract_gdrive_id(url_or_id: str) -> str:
         return ""
     url_or_id = url_or_id.strip()
     match = re.search(r'folders/([a-zA-Z0-9_-]+)', url_or_id) or re.search(r'id=([a-zA-Z0-9_-]+)', url_or_id) or re.search(r'/d/([a-zA-Z0-9_-]+)', url_or_id)
-    if match:
-        return match.group(1)
-    return url_or_id
+    folder_id = match.group(1) if match else url_or_id
+    log.debug(f"[DEBUG] Extracted Google Drive ID '{folder_id}' from raw input '{url_or_id}'")
+    return folder_id
 
 
 # ---------------------------------------------------------------------------
@@ -64,8 +71,10 @@ def detect_dataset_year(filepath):
     filename = os.path.basename(filepath)
     match = re.search(r'(20\d{2})', filename)
     if match:
-        return int(match.group(1))
-    log.warning(f"⚠️ Could not detect year in filename '{filename}'. Defaulting to latest schema (2025+).")
+        year = int(match.group(1))
+        log.info(f"[DEBUG] Filename '{filename}' $\\rightarrow$ Extracted Year: {year}")
+        return year
+    log.warning(f"⚠️ Could not detect 4-digit year in filename '{filename}'. Defaulting to modern schema (2025+).")
     return 2025
 
 
@@ -105,12 +114,12 @@ def get_year_specific_rules(year):
     }
 
     if year >= 2025:
-        log.info(f"📅 Detected Era: 2025+ (Modern Schema). Disabling Sentinel scrubbers, expecting swapped coordinates.")
+        log.info(f"📅 Era Config (Year {year}): Modern Schema (2025+). Sentinels disabled, expecting native nulls & swapped coords.")
         rules["has_sentinels"] = False
     elif year >= 2018:
-        log.info(f"📅 Detected Era: 2018-2024. Enabling Sentinel scrubbers (511, 102.3), expecting Class B vessels.")
+        log.info(f"📅 Era Config (Year {year}): Standard USCG Era (2018-2024). Sentinel scrubbers enabled (511, 102.3, 360.0).")
     else:
-        log.info(f"📅 Detected Era: Pre-2018. Enabling float-dimension rules, expecting mostly Class A commercial vessels.")
+        log.info(f"📅 Era Config (Year {year}): Legacy Era (Pre-2018). Float-dimension rules enabled, Commercial Class A.")
         rules["float_dims"] = True
         rules["has_class_b"] = False
 
@@ -120,44 +129,61 @@ def get_year_specific_rules(year):
 def read_raw_ais_dataframe(input_path: str) -> pd.DataFrame:
     """Reads raw AIS dataset files supporting uncompressed (.csv), ZStandard (.csv.zst, .zst), Gzip (.gz), and Zip (.zip)."""
     ext = input_path.lower()
-    
+    start_t = time.time()
+    file_size_mb = os.path.getsize(input_path) / (1024 * 1024) if os.path.exists(input_path) else 0.0
+    log.info(f"[DEBUG] Reading raw file '{os.path.basename(input_path)}' ({file_size_mb:.2f} MB on disk)...")
+
     # 1. High-Speed PyArrow Reader
     try:
         if ext.endswith('.zst') or ext.endswith('.zstd'):
-            import pyarrow as pa
+            log.info(f"[DEBUG] Opening PyArrow ZStandard CompressedInputStream for {os.path.basename(input_path)}...")
             input_stream = pa.CompressedInputStream(input_path, 'zstd')
             table = pv.read_csv(
                 input_stream,
                 convert_options=pv.ConvertOptions(column_types={'MMSI': 'int32', 'mmsi': 'int32'})
             )
-            return table.to_pandas()
+            df = table.to_pandas()
+            log.info(f"[DEBUG] PyArrow ZST read complete in {time.time() - start_t:.2f}s: {len(df):,} rows loaded.")
+            return df
         elif ext.endswith('.gz') or ext.endswith('.gzip'):
-            import pyarrow as pa
+            log.info(f"[DEBUG] Opening PyArrow GZip CompressedInputStream for {os.path.basename(input_path)}...")
             input_stream = pa.CompressedInputStream(input_path, 'gzip')
             table = pv.read_csv(
                 input_stream,
                 convert_options=pv.ConvertOptions(column_types={'MMSI': 'int32', 'mmsi': 'int32'})
             )
-            return table.to_pandas()
+            df = table.to_pandas()
+            log.info(f"[DEBUG] PyArrow GZ read complete in {time.time() - start_t:.2f}s: {len(df):,} rows loaded.")
+            return df
         else:
+            log.info(f"[DEBUG] Opening PyArrow native CSV reader for {os.path.basename(input_path)}...")
             table = pv.read_csv(
                 input_path,
                 convert_options=pv.ConvertOptions(column_types={'MMSI': 'int32', 'mmsi': 'int32'})
             )
-            return table.to_pandas()
+            df = table.to_pandas()
+            log.info(f"[DEBUG] PyArrow CSV read complete in {time.time() - start_t:.2f}s: {len(df):,} rows loaded.")
+            return df
     except Exception as pyarrow_err:
         log.warning(f"⚠️ PyArrow direct read notice for {os.path.basename(input_path)}: {pyarrow_err}. Falling back to Pandas...")
 
     # 2. Robust Pandas Fallback Reader
     try:
         if ext.endswith('.zst') or ext.endswith('.zstd'):
-            return pd.read_csv(input_path, compression='zstd', low_memory=False)
+            log.info(f"[DEBUG] Fallback Pandas read_csv(compression='zstd') for {os.path.basename(input_path)}...")
+            df = pd.read_csv(input_path, compression='zstd', low_memory=False)
         elif ext.endswith('.zip'):
-            return pd.read_csv(input_path, compression='zip', low_memory=False)
+            log.info(f"[DEBUG] Fallback Pandas read_csv(compression='zip') for {os.path.basename(input_path)}...")
+            df = pd.read_csv(input_path, compression='zip', low_memory=False)
         elif ext.endswith('.gz') or ext.endswith('.gzip'):
-            return pd.read_csv(input_path, compression='gzip', low_memory=False)
+            log.info(f"[DEBUG] Fallback Pandas read_csv(compression='gzip') for {os.path.basename(input_path)}...")
+            df = pd.read_csv(input_path, compression='gzip', low_memory=False)
         else:
-            return pd.read_csv(input_path, compression='infer', low_memory=False)
+            log.info(f"[DEBUG] Fallback Pandas read_csv(compression='infer') for {os.path.basename(input_path)}...")
+            df = pd.read_csv(input_path, compression='infer', low_memory=False)
+
+        log.info(f"[DEBUG] Pandas fallback read complete in {time.time() - start_t:.2f}s: {len(df):,} rows loaded.")
+        return df
     except Exception as pd_err:
         log.error(f"❌ Failed to read raw file {input_path} with Pandas: {pd_err}")
         return None
@@ -168,11 +194,15 @@ def read_raw_ais_dataframe(input_path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def format_noaa_dataset(input_csv, output_zst):
     """Preprocesses a raw AIS CSV / CSV.ZST file into standardized, ZST-compressed format."""
-    log.info(f"\n🚀 Processing: {input_csv}")
+    start_t = time.time()
+    log.info(f"\n🚀 Starting Preprocessing Task: {input_csv}")
     
     if not os.path.exists(input_csv) or os.path.getsize(input_csv) == 0:
         log.warning(f"⚠️ Skipping empty or non-existent file: {input_csv}")
         return None
+
+    file_bytes = os.path.getsize(input_csv)
+    log.info(f"[DEBUG] Target File Exists: True | Size: {file_bytes / (1024*1024):.2f} MB ({file_bytes:,} bytes)")
 
     year = detect_dataset_year(input_csv)
     rules = get_year_specific_rules(year)
@@ -185,21 +215,30 @@ def format_noaa_dataset(input_csv, output_zst):
         log.error(f"❌ Could not read valid DataFrame from {input_csv}")
         return None
     
-    log.info(f"Loaded {len(df)} raw rows into RAM.")
+    raw_row_count = len(df)
+    raw_memory_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
+    log.info(f"[DEBUG] Loaded {raw_row_count:,} raw rows into RAM ({raw_memory_mb:.2f} MB RAM footprint).")
 
+    # Column Normalization
+    raw_cols = list(df.columns)
     df.columns = [normalize_col(c) for c in df.columns]
+    log.debug(f"[DEBUG] Raw Columns ({len(raw_cols)}): {raw_cols} $\\rightarrow$ Normalized: {list(df.columns)}")
     
     cols_to_keep = [c for c in df.columns if c in rules["mapping"]]
     df = df[cols_to_keep]
     df = df.rename(columns=rules["mapping"])
+    log.info(f"[DEBUG] Mapped {len(df.columns)} relevant AIS feature columns: {list(df.columns)}")
 
     expected_cols = ['mmsi', 'base_date_time', 'latitude', 'longitude', 'sog', 'cog', 'heading', 'vessel_type', 'length', 'width', 'draft']
+    missing_injected = []
     for col in expected_cols:
         if col not in df.columns:
-            log.warning(f"⚠️ Column '{col}' missing from {year} dataset. Injecting blanks to prevent crashes.")
+            missing_injected.append(col)
             df[col] = np.nan
+    if missing_injected:
+        log.warning(f"⚠️ Injected {len(missing_injected)} missing columns for schema safety: {missing_injected}")
 
-    log.info("Sanitizing coordinates, dates, and types...")
+    log.info("Sanitizing coordinates, dates, and data types...")
     df['base_date_time'] = pd.to_datetime(df['base_date_time'], errors='coerce')
     
     for col in ['mmsi', 'vessel_type', 'latitude', 'longitude', 'sog', 'cog', 'heading', 'length', 'width', 'draft']:
@@ -207,18 +246,26 @@ def format_noaa_dataset(input_csv, output_zst):
 
     initial_len = len(df)
     df = df.dropna(subset=['latitude', 'longitude', 'base_date_time', 'mmsi'])
-    log.info(f"Dropped {initial_len - len(df)} rows due to missing critical GPS/Time data.")
+    dropped_gps = initial_len - len(df)
+    log.info(f"Dropped {dropped_gps:,} corrupted/incomplete rows due to missing critical GPS or Timestamp data ({len(df):,} rows remaining).")
 
     if len(df) == 0:
         log.error("❌ CRITICAL: No valid rows left after coordinate cleaning!")
         return None
 
     if rules["has_sentinels"]:
-        log.info("Scrubbing pre-2025 USCG Sentinel values (511, 102.3, 360.0)...")
+        count_511 = (df['heading'] == 511).sum()
+        count_102 = (df['sog'] >= 102.3).sum()
+        count_360 = (df['cog'] >= 360.0).sum()
+        log.info(f"[DEBUG] Sentinel Scrubbing: Replaced {count_511:,} invalid headings (511), {count_102:,} invalid SOG (>=102.3), {count_360:,} invalid COG (>=360.0) with NaN.")
         df.loc[df['heading'] == 511, 'heading'] = np.nan
         df.loc[df['sog'] >= 102.3, 'sog'] = np.nan
         df.loc[df['cog'] >= 360.0, 'cog'] = np.nan
 
+    count_zero_len = (df['length'] <= 0).sum()
+    count_zero_wid = (df['width'] <= 0).sum()
+    count_zero_dft = (df['draft'] <= 0).sum()
+    log.debug(f"[DEBUG] Zero-Dimension Scrubbing: Replaced {count_zero_len:,} zero lengths, {count_zero_wid:,} zero widths, {count_zero_dft:,} zero drafts with NaN.")
     df.loc[df['length'] <= 0, 'length'] = np.nan
     df.loc[df['width'] <= 0, 'width'] = np.nan
     df.loc[df['draft'] <= 0, 'draft'] = np.nan
@@ -230,10 +277,19 @@ def format_noaa_dataset(input_csv, output_zst):
         for col in ['length', 'width']:
             df[col] = df[col].fillna(0).astype(np.int32)
 
+    cleaned_memory_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
+    log.info(f"[DEBUG] Downcasted cleaned dataset memory: {cleaned_memory_mb:.2f} MB RAM (down from {raw_memory_mb:.2f} MB).")
+
     os.makedirs(os.path.dirname(os.path.abspath(output_zst)), exist_ok=True)
-    log.info(f"Saving {len(df)} perfectly standardized rows to {output_zst}...")
+    log.info(f"Saving {len(df):,} standardized rows to {output_zst} (ZStandard compression)...")
     df.to_csv(output_zst, index=False, compression='zstd')
-    log.info(f"✅ {os.path.basename(output_zst)} is ready for the CommonRoad Pipeline.")
+    
+    output_bytes = os.path.getsize(output_zst)
+    compression_ratio = file_bytes / max(output_bytes, 1)
+    duration_s = time.time() - start_t
+    log.info(f"✅ Preprocessing Complete in {duration_s:.2f}s!")
+    log.info(f"   Output ZST Size: {output_bytes / (1024*1024):.2f} MB ({output_bytes:,} bytes) | Compression Ratio: {compression_ratio:.2f}x")
+    log.info(f"   File Ready: {os.path.basename(output_zst)}\n")
     return output_zst
 
 
@@ -274,9 +330,11 @@ def get_gdrive_api_service(credentials_path=None):
             break
 
     if not cred_file:
+        log.debug("[DEBUG] No valid Google credentials JSON file found in search paths.")
         return None
 
     token_path = os.path.join(os.path.dirname(cred_file), "token.json")
+    log.info(f"[DEBUG] Found Google credentials file: '{cred_file}' (Token path: '{token_path}')")
 
     try:
         with open(cred_file, 'r') as f:
@@ -286,9 +344,11 @@ def get_gdrive_api_service(credentials_path=None):
             log.info(f"🔑 Authenticated using Google Service Account: {data.get('client_email', cred_file)}")
         else:
             if os.path.exists(token_path):
+                log.info(f"[DEBUG] Loading existing OAuth token from '{token_path}'...")
                 creds = Credentials.from_authorized_user_file(token_path, SCOPES)
             if not creds or not creds.valid:
                 if creds and creds.expired and creds.refresh_token:
+                    log.info("[DEBUG] OAuth token expired $\\rightarrow$ refreshing via refresh_token...")
                     creds.refresh(Request())
                 else:
                     flow = InstalledAppFlow.from_client_secrets_file(cred_file, SCOPES)
@@ -301,9 +361,11 @@ def get_gdrive_api_service(credentials_path=None):
                         creds = flow.run_local_server(port=0, open_browser=False)
                 with open(token_path, 'w') as token:
                     token.write(creds.to_json())
+                    log.info(f"[DEBUG] Saved fresh OAuth token to '{token_path}'")
             log.info(f"🔑 Authenticated using Google OAuth2 User Credentials ({os.path.basename(cred_file)}).")
         
         service = build('drive', 'v3', credentials=creds)
+        log.info("[DEBUG] Google Drive API v3 service successfully initialized.")
         return service
     except Exception as e:
         log.warning(f"⚠️ Google API authentication notice ({cred_file}): {e}")
@@ -316,6 +378,7 @@ def get_gdrive_folder_file_list(folder_url_or_id: str, credentials_path=None) ->
     Returns: [{'id': file_id, 'name': filename}, ...]
     """
     folder_id = extract_gdrive_id(folder_url_or_id)
+    log.info(f"🔍 Querying Google Drive folder contents (Folder ID: {folder_id})...")
     items = []
 
     # Method 1: Google Drive API v3
@@ -327,16 +390,24 @@ def get_gdrive_folder_file_list(folder_url_or_id: str, credentials_path=None) ->
                 response = service.files().list(
                     q=f"'{folder_id}' in parents and trashed = false",
                     spaces='drive',
-                    fields='nextPageToken, files(id, name, size)',
+                    fields='nextPageToken, files(id, name, size, mimeType)',
                     pageToken=page_token
                 ).execute()
                 for file in response.get('files', []):
-                    items.append({'id': file.get('id'), 'name': file.get('name')})
+                    items.append({
+                        'id': file.get('id'),
+                        'name': file.get('name'),
+                        'size': int(file.get('size', 0))
+                    })
                 page_token = response.get('nextPageToken', None)
                 if not page_token:
                     break
             if items:
-                log.info(f"📋 Retrieved {len(items)} file metadata entries via Google Drive API.")
+                log.info(f"📋 Retrieved {len(items)} file metadata entries via Google Drive API v3.")
+                for it in items[:5]:
+                    log.info(f"   - Remote File: {it['name']} (ID: {it['id']}, Size: {it['size'] / (1024*1024):.2f} MB)")
+                if len(items) > 5:
+                    log.info(f"   ... and {len(items) - 5} more files.")
                 return items
         except Exception as e:
             log.warning(f"⚠️ Google Drive API file listing notice: {e}")
@@ -344,15 +415,20 @@ def get_gdrive_folder_file_list(folder_url_or_id: str, credentials_path=None) ->
     # Method 2: gdown folder listing (skip_download=True)
     if gdown is not None:
         try:
+            log.info(f"[DEBUG] Querying gdown folder scanner (ID: {folder_id}, skip_download=True)...")
             res = gdown.download_folder(id=folder_id, skip_download=True, quiet=True)
             if res:
                 for obj in res:
                     if hasattr(obj, 'id') and hasattr(obj, 'path'):
-                        items.append({'id': obj.id, 'name': os.path.basename(obj.path)})
+                        items.append({'id': obj.id, 'name': os.path.basename(obj.path), 'size': getattr(obj, 'size', 0)})
                     elif isinstance(obj, dict):
-                        items.append({'id': obj.get('id'), 'name': obj.get('name')})
+                        items.append({'id': obj.get('id'), 'name': obj.get('name'), 'size': int(obj.get('size', 0))})
             if items:
                 log.info(f"📋 Retrieved {len(items)} file metadata entries via gdown folder scanner.")
+                for it in items[:5]:
+                    log.info(f"   - Remote File: {it['name']} (ID: {it['id']})")
+                if len(items) > 5:
+                    log.info(f"   ... and {len(items) - 5} more files.")
                 return items
         except Exception as e:
             log.warning(f"⚠️ gdown file listing notice: {e}")
@@ -364,7 +440,8 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
     """Uploads a converted .csv.zst dataset file to the specified Google Drive destination folder."""
     output_folder_id = extract_gdrive_id(output_folder_id_or_url)
     filename = os.path.basename(local_file_path)
-    log.info(f"📤 Uploading {filename} to Google Drive Folder: {output_folder_id}...")
+    file_size_mb = os.path.getsize(local_file_path) / (1024 * 1024) if os.path.exists(local_file_path) else 0.0
+    log.info(f"📤 Uploading '{filename}' ({file_size_mb:.2f} MB) to Google Drive Folder: {output_folder_id}...")
 
     # Method 1: Google Drive v3 API
     service = get_gdrive_api_service(credentials_path)
@@ -375,19 +452,23 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
                 'parents': [output_folder_id]
             }
             media = MediaFileUpload(local_file_path, mimetype='application/zstd', resumable=True)
+            log.info(f"[DEBUG] Initiating resumable MediaFileUpload for {filename}...")
             uploaded_file = service.files().create(
                 body=file_metadata,
                 media_body=media,
                 fields='id, name, webViewLink'
             ).execute()
-            log.info(f"✅ Successfully uploaded via Google Drive API! File ID: {uploaded_file.get('id')}")
+            log.info(f"✅ Successfully uploaded via Google Drive API!")
+            log.info(f"   Uploaded File ID: {uploaded_file.get('id')}")
+            log.info(f"   Google Drive Link: {uploaded_file.get('webViewLink')}")
             return True
         except Exception as e:
             log.error(f"❌ Google Drive API upload failed: {e}")
 
-    # Method 2: PyDrive2 fallback (only if client_secrets.json exists)
+    # Method 2: PyDrive2 fallback (only if client_secrets.json or credentials.json exists)
     if GoogleDrive is not None and (os.path.exists("client_secrets.json") or os.path.exists("credentials.json")):
         try:
+            log.info("[DEBUG] Attempting PyDrive2 upload fallback...")
             gauth = GoogleAuth()
             if os.path.exists("client_secrets.json"):
                 gauth.LoadClientConfigFile("client_secrets.json")
@@ -415,7 +496,7 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
         except Exception as e:
             log.warning(f"⚠️ PyDrive2 upload notice: {e}")
 
-    log.warning(f"ℹ️ Google Drive API credentials ('credentials.json' / 'client_secrets.json') not found.")
+    log.warning(f"ℹ️ Google Drive API credentials ('credentials.json' / 'client_secrets.json') not found or unauthenticated.")
     log.info(f"   Target Google Drive Folder: https://drive.google.com/drive/folders/{output_folder_id}")
     return False
 
@@ -450,9 +531,12 @@ def process_single_raw_file_item(
 
     # 1. Download single file if not locally present
     if file_id and not os.path.exists(local_raw_path):
-        log.info(f"📥 [PID {pid}] Downloading single raw file [{idx}/{total_files}]: {filename}...")
+        log.info(f"📥 [PID {pid}] Downloading single raw file [{idx}/{total_files}]: {filename} (ID: {file_id})...")
         try:
+            dl_start = time.time()
             gdown.download(id=file_id, output=local_raw_path, quiet=True)
+            dl_bytes = os.path.getsize(local_raw_path) if os.path.exists(local_raw_path) else 0
+            log.info(f"📥 [PID {pid}] Downloaded {filename} in {time.time() - dl_start:.2f}s ({dl_bytes / (1024*1024):.2f} MB).")
         except Exception as e:
             log.error(f"❌ [PID {pid}] Failed to download {filename} (ID: {file_id}): {e}")
             return False
@@ -462,20 +546,26 @@ def process_single_raw_file_item(
         if os.path.exists(local_raw_path):
             try:
                 os.remove(local_raw_path)
+                log.info(f"[DEBUG][PID {pid}] Removed 0-byte placeholder file from disk.")
             except Exception:
                 pass
         return False
+
+    raw_bytes = os.path.getsize(local_raw_path)
 
     # 2. Preprocess single file
     clean_name = re.sub(r'\.(csv|zip|gz|zst|zstd)+$', '', filename, flags=re.IGNORECASE)
     clean_name = re.sub(r'\.csv$', '', clean_name, flags=re.IGNORECASE) + ".csv.zst"
     local_processed_path = os.path.join(local_processed_dir, clean_name)
 
+    log.info(f"⚙️ [PID {pid}] Formatting & cleaning {filename} $\\rightarrow$ {clean_name}...")
     processed_path = format_noaa_dataset(local_raw_path, local_processed_path)
 
     # 3. Upload converted file to destination Google Drive folder
     uploaded_successfully = False
     if processed_path and os.path.exists(processed_path):
+        proc_bytes = os.path.getsize(processed_path)
+        log.info(f"📤 [PID {pid}] Uploading converted file ({proc_bytes / (1024*1024):.2f} MB) to Google Drive...")
         uploaded_successfully = upload_processed_to_gdrive(processed_path, output_gdrive_url, credentials_path)
 
     # 4. Immediate Cleanup: Free up disk space for raw download file
@@ -483,15 +573,16 @@ def process_single_raw_file_item(
     if os.path.exists(local_raw_path):
         try:
             os.remove(local_raw_path)
-            log.info(f"   Deleted local raw file: {os.path.basename(local_raw_path)}")
+            log.info(f"   Deleted local raw file: {os.path.basename(local_raw_path)} (Freed {raw_bytes / (1024*1024):.2f} MB)")
         except Exception as e:
             log.warning(f"   Could not remove {local_raw_path}: {e}")
 
     # Only delete local processed file if it was uploaded to Google Drive
     if uploaded_successfully and processed_path and os.path.exists(processed_path):
         try:
+            p_bytes = os.path.getsize(processed_path)
             os.remove(processed_path)
-            log.info(f"   Deleted local processed file (uploaded to GDrive): {os.path.basename(processed_path)}")
+            log.info(f"   Deleted local processed file (uploaded to GDrive): {os.path.basename(processed_path)} (Freed {p_bytes / (1024*1024):.2f} MB)")
         except Exception as e:
             log.warning(f"   Could not remove {processed_path}: {e}")
     elif processed_path and os.path.exists(processed_path):
