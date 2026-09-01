@@ -480,8 +480,11 @@
 
     \begin{block}{Feature Channel Normalization Statistics}
         \begin{itemize}
-            \item \textbf{Ego/Agent State Features} $[x, y, v_x, v_y, \theta, r]$:
-              $$\mu_{\mathrm{state}} = [0, 0, 3.5, 0, 0, 0], \quad \sigma_{\mathrm{state}} = [100.0, 100.0, 3.0, 1.0, 1.0, 0.05]$$
+            \item \textbf{Ego/Agent 10D State Features} $[x, y, v_x, v_y, \theta, r, a_{x,\mathrm{ext}}, a_{y,\mathrm{ext}}, \alpha_{\mathrm{ext}}, \beta_{\mathrm{drift}}]$:
+              $$\begin{aligned}
+              \mu_{\mathrm{state}} &= [0, 0, 3.5, 0, 0, 0, 0, 0, 0, 0] \\
+              \sigma_{\mathrm{state}} &= [100.0, 100.0, 3.0, 1.0, 1.0, 0.05, 1.0, 1.0, 0.5, 0.5]
+              \end{aligned}$$
             \item \textbf{Coastline Polyline Points} $[x, y]$:
               $$\mu_{\mathrm{map}} = [0, 0], \quad \sigma_{\mathrm{map}} = [2000.0, 2000.0]$$
         \end{itemize}
