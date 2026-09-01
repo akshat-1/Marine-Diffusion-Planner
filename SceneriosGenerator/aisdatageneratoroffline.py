@@ -235,7 +235,7 @@ def _log_summary(stats):
 # ---------------------------------------------------------------------------
 def generate_dataset_from_ais(zst_filepath, shp_filepath, output_dir, 
                                sampling_strategy="density_first", max_windows=None, manifest_path="manifest.jsonl",
-                               seed=42):
+                               seed=42, on_scenario_created=None):
     import random
     random.seed(seed)
     np.random.seed(seed)
@@ -650,6 +650,12 @@ def generate_dataset_from_ais(zst_filepath, shp_filepath, output_dir,
                     scenario=scenario, planning_problem_set=PlanningProblemSet(),
                     author="Batch ML Pipeline", affiliation="Data Engineering", source="AIS", tags={Tag.OPENSEA}
                 ).write_to_file(output_file, OverwriteExistingFile.ALWAYS)
+
+                if on_scenario_created is not None:
+                    try:
+                        on_scenario_created(output_file)
+                    except Exception as err:
+                        log.warning("on_scenario_created callback notice: %s", err)
 
                 manifest_entries.append(dict(
                     scenario_id=f"scenario_{scenario_counter:04d}",

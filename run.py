@@ -219,52 +219,33 @@ def process_file_worker(
     formatted_bytes = os.path.getsize(formatted_path)
 
     # -----------------------------------------------------------------------
-    # Step 4: Generate CommonOcean XML Scenarios via aisdatageneratoroffline.py
+    # Step 4: Real-Time Streaming Scenario Generation & Google Drive Upload
     # -----------------------------------------------------------------------
-    log.info(f"🚢 [{thread_name}] Step 4/7: Generating CommonOcean XML Scenarios from {formatted_zst_name}...")
-    try:
-        gen_start = time.time()
-        stats = generate_dataset_from_ais(
-            zst_filepath=formatted_path,
-            shp_filepath=shp_filepath,
-            output_dir=thread_scenarios_dir,
-            sampling_strategy="density_first"
-        )
-        log.info(f"🚢 [{thread_name}] Scenario generation completed in {time.time() - gen_start:.2f}s!")
-    except Exception as e:
-        log.error(f"❌ [{thread_name}] Scenario generation failed for {formatted_zst_name}: {e}")
-        if os.path.exists(formatted_path):
-            try:
-                os.remove(formatted_path)
-            except Exception:
-                pass
-        return False
+    scenario_queue = Queue()
+    scenarios_gdrive_folder_id = extract_gdrive_id(scenarios_gdrive_url)
+    uploaded_stats = {"count": 0}
 
-    # -----------------------------------------------------------------------
-    # Step 5: IMMEDIATELY REMOVE Formatted .csv.zst File from Local Disk
-    # -----------------------------------------------------------------------
-    log.info(f"🧹 [{thread_name}] Step 5/7: Removing intermediate .csv.zst file ({formatted_bytes / (1024*1024):.2f} MB)...")
-    if os.path.exists(formatted_path):
-        try:
-            os.remove(formatted_path)
-            log.info(f"   Deleted formatted file: {os.path.basename(formatted_path)}")
-        except Exception as e:
-            log.warning(f"   Could not remove {formatted_path}: {e}")
+    # Asynchronous Real-Time Scenario Uploader Consumer Thread
+    def real_time_uploader_worker():
+        uploader_thread_name = f"{thread_name}-Uploader"
+        log.info(f"🌐 [{uploader_thread_name}] Real-time streaming uploader thread active...")
 
-    # -----------------------------------------------------------------------
-    # Step 6: Assign Globally Unique Continuous Scenario Names & Upload XMLs
-    # -----------------------------------------------------------------------
-    generated_xml_files = sorted(glob.glob(os.path.join(thread_scenarios_dir, "*.xml")))
-    log.info(f"📤 [{thread_name}] Step 6/7: Preparing {len(generated_xml_files)} generated XML scenarios for non-conflicting upload...")
+        while True:
+            xml_file = scenario_queue.get()
+            if xml_file is None:  # Sentinel signal: scenario generation complete
+                scenario_queue.task_done()
+                break
 
-    renamed_xml_files = []
-    if generated_xml_files:
-        start_global_idx = get_next_scenario_index_range(len(generated_xml_files))
-        end_global_idx = start_global_idx + len(generated_xml_files) - 1
-        log.info(f"🔢 [{thread_name}] Assigned continuous global index range: scenario_{start_global_idx:06d}.xml $\\rightarrow$ scenario_{end_global_idx:06d}.xml")
+            if not os.path.exists(xml_file):
+                scenario_queue.task_done()
+                continue
 
-        for j, xml_file in enumerate(generated_xml_files):
-            global_idx = start_global_idx + j
+            # Assign continuous global scenario ID & rename file
+            with COUNTER_LOCK:
+                global GLOBAL_SCENARIO_COUNTER
+                global_idx = GLOBAL_SCENARIO_COUNTER
+                GLOBAL_SCENARIO_COUNTER += 1
+
             new_scenario_id = f"scenario_{global_idx:06d}"
             new_xml_name = f"{new_scenario_id}.xml"
             new_xml_path = os.path.join(thread_scenarios_dir, new_xml_name)
@@ -278,35 +259,72 @@ def process_file_worker(
                     f.write(updated_content)
                 if xml_file != new_xml_path and os.path.exists(xml_file):
                     os.remove(xml_file)
-                renamed_xml_files.append(new_xml_path)
             except Exception as e:
-                log.warning(f"⚠️ Notice updating XML scenarioId attribute ({xml_file}): {e}")
-                renamed_xml_files.append(xml_file)
+                new_xml_path = xml_file
 
-    generated_xml_files = renamed_xml_files
-    scenarios_gdrive_folder_id = extract_gdrive_id(scenarios_gdrive_url)
-    uploaded_count = 0
+            # Real-time upload to Google Drive
+            log.info(f"📤 [{uploader_thread_name}] Real-time uploading generated scenario: {new_xml_name} (Global Index: #{global_idx})...")
+            success = upload_processed_to_gdrive(
+                local_file_path=new_xml_path,
+                output_folder_id_or_url=scenarios_gdrive_folder_id,
+                credentials_path=credentials_path,
+                mimetype="application/xml"
+            )
 
-    for xml_file in generated_xml_files:
-        xml_name = os.path.basename(xml_file)
-        success = upload_processed_to_gdrive(
-            local_file_path=xml_file,
-            output_folder_id_or_url=scenarios_gdrive_folder_id,
-            credentials_path=credentials_path,
-            mimetype="application/xml"
+            # Immediately delete uploaded XML file from local disk to free space
+            if success and os.path.exists(new_xml_path):
+                try:
+                    os.remove(new_xml_path)
+                    log.info(f"🧹 [{uploader_thread_name}] Deleted uploaded XML from disk: {new_xml_name} (Disk space clean)")
+                except Exception:
+                    pass
+                uploaded_stats["count"] += 1
+            else:
+                log.warning(f"💾 Preserving un-uploaded scenario XML locally: {new_xml_name}")
+
+            scenario_queue.task_done()
+
+        log.info(f"✨ [{uploader_thread_name}] Uploader thread finished!")
+
+    # Start uploader consumer thread
+    uploader_thread = threading.Thread(target=real_time_uploader_worker, name=f"{thread_name}-Up", daemon=True)
+    uploader_thread.start()
+
+    # Callback invoked immediately when each scenario XML is written
+    def on_scenario_created_callback(created_xml_path):
+        scenario_queue.put(created_xml_path)
+
+    log.info(f"🚢 [{thread_name}] Step 4/7: Generating CommonOcean XML Scenarios from {formatted_zst_name} (Real-time Uploader Active)...")
+    try:
+        gen_start = time.time()
+        stats = generate_dataset_from_ais(
+            zst_filepath=formatted_path,
+            shp_filepath=shp_filepath,
+            output_dir=thread_scenarios_dir,
+            sampling_strategy="density_first",
+            on_scenario_created=on_scenario_created_callback
         )
-        if success:
-            uploaded_count += 1
-            # Step 7: IMMEDIATELY REMOVE uploaded XML scenario from local disk
-            try:
-                os.remove(xml_file)
-                log.info(f"   Deleted uploaded scenario XML: {xml_name}")
-            except Exception as e:
-                log.warning(f"   Could not remove uploaded XML {xml_name}: {e}")
-        else:
-            log.warning(f"💾 Preserving un-uploaded scenario XML locally: {xml_name}")
+        log.info(f"🚢 [{thread_name}] Scenario generation completed in {time.time() - gen_start:.2f}s!")
+    except Exception as e:
+        log.error(f"❌ [{thread_name}] Scenario generation failed for {formatted_zst_name}: {e}")
+    finally:
+        # Signal uploader thread to finish & wait for remaining queue items to be uploaded & deleted
+        scenario_queue.put(None)
+        scenario_queue.join()
+        uploader_thread.join()
 
-    log.info(f"📤 [{thread_name}] Uploaded {uploaded_count}/{len(generated_xml_files)} XML scenario files to Google Drive folder '{scenarios_gdrive_folder_id}'.")
+    # -----------------------------------------------------------------------
+    # Step 5: IMMEDIATELY REMOVE Formatted .csv.zst File from Local Disk
+    # -----------------------------------------------------------------------
+    log.info(f"🧹 [{thread_name}] Step 5/7: Removing intermediate .csv.zst file ({formatted_bytes / (1024*1024):.2f} MB)...")
+    if os.path.exists(formatted_path):
+        try:
+            os.remove(formatted_path)
+            log.info(f"   Deleted formatted file: {os.path.basename(formatted_path)}")
+        except Exception as e:
+            log.warning(f"   Could not remove {formatted_path}: {e}")
+
+    log.info(f"📤 [{thread_name}] Step 6/7: Uploaded {uploaded_stats['count']} scenario XML files to Google Drive folder '{scenarios_gdrive_folder_id}'.")
 
     # -----------------------------------------------------------------------
     # Step 7: Clean Thread Staging Directories & Free RAM
