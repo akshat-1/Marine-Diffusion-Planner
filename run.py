@@ -133,7 +133,9 @@ def process_file_worker(
     shp_filepath: str,
     raw_gdrive_url: str,
     scenarios_gdrive_url: str,
-    credentials_path: str = None
+    credentials_path: str = None,
+    node_rank: int = 0,
+    world_size: int = 1
 ) -> bool:
     """
     Worker function executed by worker threads:
@@ -247,7 +249,10 @@ def process_file_worker(
                 global_idx = GLOBAL_SCENARIO_COUNTER
                 GLOBAL_SCENARIO_COUNTER += 1
 
-            new_scenario_id = f"scenario_{global_idx:06d}"
+            if world_size > 1:
+                new_scenario_id = f"scenario_node{node_rank}_{global_idx:06d}"
+            else:
+                new_scenario_id = f"scenario_{global_idx:06d}"
             new_xml_name = f"{new_scenario_id}.xml"
             new_xml_path = os.path.join(thread_scenarios_dir, new_xml_name)
 
@@ -350,16 +355,19 @@ def run_master_pipeline(
     raw_gdrive_url=DEFAULT_RAW_GDRIVE_URL,
     scenarios_gdrive_url=DEFAULT_SCENARIOS_GDRIVE_URL,
     num_threads=DEFAULT_NUM_THREADS,
-    credentials_path=None
+    credentials_path=None,
+    node_rank=0,
+    world_size=1
 ):
-    """Orchestrates multi-threaded end-to-end AIS conversion and scenario generation."""
+    """Orchestrates multi-threaded end-to-end AIS conversion and scenario generation across CPU cluster nodes."""
     log.info("=========================================================================")
-    log.info("🚢 MASTER MARITIME AIS PIPELINE: MULTI-THREADED END-TO-END CONVERTER")
+    log.info("🚢 MASTER MARITIME AIS PIPELINE: CLUSTER MULTI-NODE END-TO-END CONVERTER")
     log.info("=========================================================================")
     log.info(f"Input Raw AIS Google Drive:       {raw_gdrive_url}")
     log.info(f"Output Scenarios Google Drive:   {scenarios_gdrive_url}")
-    log.info(f"Parallel Worker Threads:         {num_threads} Threads")
-    log.info("Strategy:                        0-Disk-Accumulation Streaming Loop")
+    log.info(f"Cluster Configuration:           Node {node_rank} of {world_size} Total Cluster Nodes")
+    log.info(f"Parallel Worker Threads:         {num_threads} Threads per Node")
+    log.info("Strategy:                        Zero-Duplication Modulo Partitioning & Real-Time Streaming")
     log.info("=========================================================================\n")
 
     # 1. Ensure Coastline Shapefile
@@ -368,7 +376,7 @@ def run_master_pipeline(
     # 2. Pre-authenticate Google Drive Service on main thread (pop-up OAuth browser prompt once if needed)
     get_gdrive_api_service(credentials_path)
 
-    # 3. Retrieve raw file metadata from Google Drive input folder without downloading
+    # 3. Retrieve raw file metadata from Google Drive input folder without downloading content
     file_items = get_gdrive_folder_file_list(raw_gdrive_url, credentials_path)
 
     if not file_items:
@@ -380,16 +388,31 @@ def run_master_pipeline(
         log.error("❌ No raw AIS files found to process.")
         return
 
-    total_files = len(file_items)
-    log.info(f"🔄 Starting multi-threaded pipeline for {total_files} total raw files across {num_threads} worker threads...\n")
+    total_remote_files = len(file_items)
 
-    # 4. Multithreaded Execution via ThreadPoolExecutor
+    # 4. Multi-Node Cluster Disjoint Partitioning (Zero raw file processing duplication)
+    if world_size > 1:
+        node_file_items = [
+            item for idx, item in enumerate(file_items)
+            if (idx % world_size) == node_rank
+        ]
+        log.info(f"🌐 [CLUSTER MODE] Node Rank {node_rank}/{world_size}: Claimed {len(node_file_items)} of {total_remote_files} total raw files via modulo partitioning.")
+        file_items = node_file_items
+
+    if not file_items:
+        log.info(f"✨ Node Rank {node_rank}/{world_size}: No raw files assigned to this node rank.")
+        return
+
+    total_files = len(file_items)
+    log.info(f"🔄 Starting multi-threaded pipeline for {total_files} assigned raw files across {num_threads} worker threads...\n")
+
+    # 5. Multithreaded Execution via ThreadPoolExecutor
     num_threads = max(1, int(num_threads))
-    with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix="AISWorker") as executor:
+    with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix=f"Node{node_rank}Worker") as executor:
         futures = [
             executor.submit(
                 process_file_worker,
-                item, idx, total_files, shp_filepath, raw_gdrive_url, scenarios_gdrive_url, credentials_path
+                item, idx, total_files, shp_filepath, raw_gdrive_url, scenarios_gdrive_url, credentials_path, node_rank, world_size
             )
             for idx, item in enumerate(file_items, 1)
         ]
@@ -401,15 +424,21 @@ def run_master_pipeline(
                 log.error(f"❌ Thread execution error: {e}")
 
     os.system('sync')
-    log.info("\n🎉 All raw AIS datasets converted to CommonOcean XML Scenarios, uploaded to Google Drive, and local space freed up!")
+    log.info(f"\n🎉 Node Rank {node_rank}/{world_size} completed! All assigned raw datasets converted, uploaded, and disk space cleaned!")
 
 
 # ---------------------------------------------------------------------------
 # CLI Argument Parser & Entry Point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Master Multi-Threaded AIS Preprocessing & CommonOcean Scenario Generator Pipeline.")
-    parser.add_argument("--num-threads", type=int, default=DEFAULT_NUM_THREADS, help=f"Number of parallel worker threads (default: {DEFAULT_NUM_THREADS})")
+    # Auto-detect cluster rank and world size from environment variables (PyTorch, SLURM, MPI, or custom)
+    env_world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("NNODES", os.environ.get("SLURM_NNODES", "1"))))
+    env_node_rank = int(os.environ.get("NODE_RANK", os.environ.get("RANK", os.environ.get("SLURM_NODEID", "0"))))
+
+    parser = argparse.ArgumentParser(description="Master Multi-Node Cluster AIS Preprocessing & CommonOcean Scenario Generator Pipeline.")
+    parser.add_argument("--num-threads", type=int, default=DEFAULT_NUM_THREADS, help=f"Number of parallel worker threads per node (default: {DEFAULT_NUM_THREADS})")
+    parser.add_argument("--node-rank", type=int, default=env_node_rank, help=f"Cluster Node Rank ID (default: auto-detected env NODE_RANK/RANK or {env_node_rank})")
+    parser.add_argument("--world-size", type=int, default=env_world_size, help=f"Total Number of Cluster Nodes (default: auto-detected env WORLD_SIZE/NNODES or {env_world_size})")
     parser.add_argument("--gdrive-input", type=str, default=DEFAULT_RAW_GDRIVE_URL, help="Input Raw AIS Google Drive Folder URL or ID")
     parser.add_argument("--gdrive-scenarios-output", type=str, default=DEFAULT_SCENARIOS_GDRIVE_URL, help="Output Scenarios Google Drive Folder URL or ID")
     parser.add_argument("--credentials", type=str, default=None, help="Path to Google Drive OAuth2 / Service Account credentials JSON")
@@ -420,5 +449,7 @@ if __name__ == "__main__":
         raw_gdrive_url=args.gdrive_input,
         scenarios_gdrive_url=args.gdrive_scenarios_output,
         num_threads=args.num_threads,
-        credentials_path=args.credentials
+        credentials_path=args.credentials,
+        node_rank=args.node_rank,
+        world_size=args.world_size
     )
