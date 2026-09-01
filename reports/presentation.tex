@@ -222,6 +222,54 @@
     \end{block}
 \end{frame}
 
+
+\begin{frame}{Aerodynamic Wind \& Wave Force Decomposition}
+    \begin{block}{Isherwood Aerodynamic Wind Force Model}
+        $$\begin{aligned}
+        F_{x,\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_T C_{Xw}(\gamma_w) \quad (\rho_a = 1.225\text{ kg/m}^3) \\
+        F_{y,\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_L C_{Yw}(\gamma_w) \\
+        N_{\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_L L C_{Nw}(\gamma_w)
+        \end{aligned}$$
+        where $A_T \approx 0.8 B^2$ (frontal windage), $A_L \approx L \cdot d_{\mathrm{freeboard}}$ (lateral windage), and $\gamma_w = \theta_w - \psi$.
+    \end{block}
+
+    \begin{block}{Second-Order Mean Wave Drift Force}
+        $$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L C_{Dwy}(\chi)$$
+        where $H_s$ is significant wave height and $C_{Dwy}(\chi)$ is wave drift coefficient.
+    \end{block}
+\end{frame}
+
+\begin{frame}{Mathematical Derivation: Significant Wave Height ($H_s$) Extraction}
+    \begin{block}{1. Wave Elevation Energy Spectrum Definition}
+        Significant wave height $H_s$ is four times the square root of the zeroth spectral moment $m_0$:
+        $$H_s = 4 \sigma_z = 4 \sqrt{m_0} = 4 \sqrt{\int_0^\infty S(\omega) d\omega}$$
+    \end{block}
+
+    \begin{block}{2. Inverse Hydrodynamic Derivation from AIS Kinematics}
+        From Maruo's 2nd-order mean wave drift equation:
+        $$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L C_{Dwy}(\chi)$$
+        Subtracting wind drag $F_{y,\mathrm{wind}}$ from total MMG residual $F_{y,\mathrm{ext}} = (m+m_y)\dot{v} + (m+m_x)ur - F_{y,\mathrm{hull}}$ isolates $F_{y,\mathrm{wave}}$. Rearranging yields the \textbf{effective equivalent wave height $H_s$}:
+        $$H_s = \sqrt{\frac{2 \cdot |F_{y,\mathrm{ext}} - F_{y,\mathrm{wind}}|}{\rho_w \cdot g \cdot L \cdot C_{Dwy}(\chi)}}$$
+    \end{block}
+\end{frame}
+
+\begin{frame}{Derivation: Specific Force Residual vs. Raw Force \& Velocity}
+    \begin{block}{1. Why Raw Force ($\mathbf{F}_{\mathrm{ext}}$) Fails in Neural Networks}
+        Raw force scales with mass $m = \rho_w C_b L B d$. A container ship ($m \sim 10^8\text{kg}$) has $F \sim 10^7\text{N}$ vs $10^4\text{N}$ for a boat, causing \textbf{gradient explosion and slow convergence}.
+    \end{block}
+
+    \begin{block}{2. Why Pure Drift Velocity ($\mathbf{V}_{\mathrm{drift}}$) Fails in Physics}
+        Drift velocity $v_{\mathrm{drift}} = \mathrm{SOG} \sin\beta$ is 1st-order only — it \textbf{loses transient acceleration physics ($\dot{u}, \dot{v}, \dot{r}$)} during wind gusts and wave impacts.
+    \end{block}
+
+    \begin{block}{3. Our Derivation: Mass-Normalized Specific Force ($\mathbf{f}_{\mathrm{ext}}$)}
+        $$a_{x,\mathrm{ext}} = \frac{F_{x,\mathrm{ext}}}{m}, \quad a_{y,\mathrm{ext}} = \frac{F_{y,\mathrm{ext}}}{m}, \quad \alpha_{\mathrm{ext}} = \frac{N_{\mathrm{ext}}}{m \cdot L}$$
+        \begin{itemize}
+            \item \textbf{Unit Scale} ($\sim [-1, 1]\text{ m/s}^2$ across all vessel classes) $\implies$ \textbf{Fastest NN Convergence}.
+            \item \textbf{Zero Physics Loss}: Preserves 2nd-order acceleration differentials ($\dot{u}, \dot{v}, \dot{r}$).
+        \end{itemize}
+    \end{block}
+\end{frame}
 \begin{frame}{Physical \& Hydrodynamic Constants in Force Calculations}
     \begin{table}
     \centering
@@ -247,37 +295,6 @@
     \end{table}
 \end{frame}
 
-\begin{frame}{Aerodynamic Wind \& Wave Force Decomposition}
-    \begin{block}{Isherwood Aerodynamic Wind Force Model}
-        $$\begin{aligned}
-        F_{x,\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_T C_{Xw}(\gamma_w) \quad (\rho_a = 1.225\text{ kg/m}^3) \\
-        F_{y,\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_L C_{Yw}(\gamma_w) \\
-        N_{\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_L L C_{Nw}(\gamma_w)
-        \end{aligned}$$
-        where $A_T \approx 0.8 B^2$ (frontal windage), $A_L \approx L \cdot d_{\mathrm{freeboard}}$ (lateral windage), and $\gamma_w = \theta_w - \psi$.
-    \end{block}
-
-    \begin{block}{Second-Order Mean Wave Drift Force}
-        $$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L C_{Dwy}(\chi)$$
-        where $H_s$ is significant wave height and $C_{Dwy}(\chi)$ is wave drift coefficient.
-    \end{block}
-\end{frame}
-
-\begin{frame}{Second-Order Mean Wave Drift Mechanics \& HDP Pipeline Usage}
-    \begin{block}{1. Wave Physics: First-Order vs. Second-Order Mean Drift}
-        \begin{itemize}
-            \item \textbf{First-Order Wave Action}: Oscillates at wave frequency (5--10s period), causing roll/pitch. Averages to \textbf{zero} over 200s trajectory horizon.
-            \item \textbf{Second-Order Mean Wave Drift ($F_{y,\mathrm{wave}}$)}: Non-linear wave diffraction; exerts a \textbf{steady, non-zero lateral push} that constantly drifts hull off course.
-        \end{itemize}
-    \end{block}
-
-    \begin{block}{2. Mass-Normalized Feature Pipeline (\texttt{preparedataset.py})}
-        Combined with wind drag into lateral residual acceleration $a_{y,\mathrm{ext}}$:
-        $$a_{y,\mathrm{ext}} = \frac{F_{y,\mathrm{ext}}}{m} = \frac{F_{y,\mathrm{wind}} + F_{y,\mathrm{wave}}}{m} \quad (\text{channel 7 of 10D State Vector})$$
-    \end{block}
-
-   
-\end{frame}
 \begin{frame}{  Pipeline usage}
      \begin{block}{3. CustomDiT Proprioception Conditioning \& Adaptive Steering (\texttt{train.py})}
         \begin{itemize}
