@@ -10,3 +10,10 @@ manifest.jsonl
 audit_ckpt.pt
 dp_vla_workflow.pt
 Local_Temp_Data/
+credentials.json
+token.json
+mycreds.txt
+raw_ais_downloads/
+processed_ais_outputs/
+formatted_zst_temp/
+generated_scenarios_temp/

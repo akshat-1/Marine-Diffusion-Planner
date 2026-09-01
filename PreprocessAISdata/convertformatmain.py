@@ -436,8 +436,8 @@ def get_gdrive_folder_file_list(folder_url_or_id: str, credentials_path=None) ->
     return items
 
 
-def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: str, credentials_path=None):
-    """Uploads a converted .csv.zst dataset file to the specified Google Drive destination folder."""
+def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: str, credentials_path=None, mimetype='application/zstd'):
+    """Uploads a dataset or scenario XML file to the specified Google Drive destination folder."""
     output_folder_id = extract_gdrive_id(output_folder_id_or_url)
     filename = os.path.basename(local_file_path)
     file_size_mb = os.path.getsize(local_file_path) / (1024 * 1024) if os.path.exists(local_file_path) else 0.0
@@ -451,7 +451,7 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
                 'name': filename,
                 'parents': [output_folder_id]
             }
-            media = MediaFileUpload(local_file_path, mimetype='application/zstd', resumable=True)
+            media = MediaFileUpload(local_file_path, mimetype=mimetype, resumable=True)
             log.info(f"[DEBUG] Initiating resumable MediaFileUpload for {filename}...")
             uploaded_file = service.files().create(
                 body=file_metadata,
