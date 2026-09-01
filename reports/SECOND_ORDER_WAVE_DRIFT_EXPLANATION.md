@@ -29,7 +29,7 @@ When ocean waves interact with a ship hull, the hydrodynamic forces are split in
 
 The second-order mean wave drift force acting laterally ($y$-axis perpendicular to ship heading) is computed via Maruo's wave drift formulation:
 
-$$F_{y,\text{wave}} = \frac{1}{2} \rho_w g H_s^2 L \cdot C_{Dwy}(\chi, \omega_p)$$
+$$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L \cdot C_{Dwy}(\chi, \omega_p)$$
 
 where:
 - $\rho_w = 1025\text{ kg/m}^3$: Seawater density.
