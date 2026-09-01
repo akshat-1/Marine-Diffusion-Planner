@@ -165,31 +165,81 @@
         \texttt{agents\_history} & $(10, 20, 10)$ & Surround vessels past 200s history \\
         \texttt{map\_lines} & $(20, 20, 2)$ & 20 coastlines with 20 resampled points $(x,y)$ \\
         \texttt{agent\_mask} / \texttt{map\_mask} & $(10)$, $(20)$ & Boolean padding mask (\texttt{True} = padded) \\
-        \texttt{ego_target} & $(20, 10)$ & Ground-truth target trajectory \\
+        \texttt{ego\_target} & $(20, 10)$ & Ground-truth target trajectory \\
         \bottomrule
         \end{tabular}
         \end{table}
     \end{block}
 \end{frame}
 
-\begin{frame}{10D External Force \& Drift Physics Modeling}
-    \begin{block}{Why Force Conditioning is Essential}
-        When ships drift due to wind or waves, Course Over Ground ($\mathrm{COG}$) differs from Heading ($\psi$). Unconditioned models mistake environmental leeway drift for intentional steering.
+\begin{frame}{Hydrodynamic Drift Problem \& Kinematic Definitions}
+    \begin{block}{The Leeway Drift Dilemma in Maritime AIS Data}
+        When ships encounter crosswinds or waves, Course Over Ground ($\mathrm{COG}$) deviates from Heading ($\psi$). Unconditioned models mistake environmental drift for intentional steering.
     \end{block}
 
-    \begin{block}{MMG 3-DOF Inverse Dynamics Residue Equation}
-        We compute the mass-normalized specific external force residual vector $\mathbf{f}_{\mathrm{ext}}$:
-        $$\mathbf{f}_{\mathrm{ext}} = \left[ \frac{F_{x,\mathrm{ext}}}{m}, \; \frac{F_{y,\mathrm{ext}}}{m}, \; \frac{N_{\mathrm{ext}}}{m \cdot L}, \; \beta_{\mathrm{drift}} \right]$$
-        where $F_{y,\mathrm{ext}} = (m+m_y)\dot{v} + (m+m_x)ur - F_{y,\mathrm{hull}}$ and $\beta_{\mathrm{drift}} = \mathrm{COG} - \psi$.
+    \begin{block}{Kinematic Velocity \& Acceleration Differentials}
+        \begin{itemize}
+            \item \textbf{Drift Angle ($\beta$)}: $\beta = \mathrm{wrap\_to\_pi}(\mathrm{COG} - \psi)$.
+            \item \textbf{Surge Velocity ($u$)}: $u = \mathrm{SOG} \cdot \cos\beta \quad (\text{longitudinal along hull})$.
+            \item \textbf{Sway Velocity ($v$)}: $v = \mathrm{SOG} \cdot \sin\beta \quad (\text{transverse perpendicular to hull})$.
+            \item \textbf{Accelerations}: $\dot{u} = \frac{\Delta u}{\Delta t}, \quad \dot{v} = \frac{\Delta v}{\Delta t}, \quad \dot{r} = \frac{\Delta r}{\Delta t} \quad (\Delta t = 10.0\text{s})$.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+\begin{frame}{MMG 3-DOF Vessel Hydrodynamics \& Hull Damping}
+    \begin{block}{Parametric Mass \& Added Mass (Clarke / Norrbin Approximations)}
+        For seawater density $\rho_w = 1025\text{ kg/m}^3$ and block coefficient $C_b = 0.70$:
+        $$\begin{aligned}
+        m &= \rho_w \cdot C_b \cdot L \cdot B \cdot d, \quad m_x = 0.05 \cdot m \\
+        m_y &= \rho_w \cdot \frac{\pi}{2} \cdot d^2 \cdot L \cdot \left(1 + 0.4 \frac{B}{L}\right) \\
+        I_z &= m \cdot (0.25 L)^2, \quad J_z = 0.025 \cdot m \cdot L^2
+        \end{aligned}$$
     \end{block}
 
-    \begin{itemize}
-        \item \textbf{Why Specific Force Wins}: Mass-normalized acceleration ($\text{m/s}^2$) brings small boats and container ships into unit scale $\sim [-1, 1]$, enabling \textbf{fast neural network convergence} while preserving 2nd-order acceleration physics ($\dot{u}, \dot{v}, \dot{r}$).
-    \end{itemize}
+    \begin{block}{Baseline Hull Resistance \& Cross-Flow Damping ($F_{\mathrm{hull}}$)}
+        $$\begin{aligned}
+        F_{x,\mathrm{hull}} &= -\frac{1}{2} \rho_w C_{dx} (B \cdot d) u |u| \quad (C_{dx} = 0.03) \\
+        F_{y,\mathrm{hull}} &= -\frac{1}{2} \rho_w C_{dy} (L \cdot d) v |v| \quad (C_{dy} = 0.80) \\
+        N_{\mathrm{hull}} &= -\frac{1}{16} \rho_w C_{dy} (L^2 \cdot d) r |r|
+        \end{aligned}$$
+    \end{block}
+\end{frame}
+
+\begin{frame}{MMG Inverse Force Residue Extraction \& Model Conditioning}
+    \begin{block}{Inverse MMG Hydrodynamic Residual System}
+        Extracts unexplained external force and yaw moment residuals directly from AIS differentials:
+        $$\begin{aligned}
+        F_{x,\mathrm{ext}} &= (m + m_x) \dot{u} - (m + m_y) v r - F_{x,\mathrm{hull}} \\
+        F_{y,\mathrm{ext}} &= (m + m_y) \dot{v} + (m + m_x) u r - F_{y,\mathrm{hull}} \\
+        N_{\mathrm{ext}} &= (I_z + J_z) \dot{r} - N_{\mathrm{hull}}
+        \end{aligned}$$
+    \end{block}
+
+    \begin{block}{Mass-Normalized Specific Force Vector ($\mathbf{f}_{\mathrm{ext}}$)}
+        $$\mathbf{f}_{\mathrm{ext}} = \left[ \frac{F_{x,\mathrm{ext}}}{m}, \quad \frac{F_{y,\mathrm{ext}}}{m}, \quad \frac{N_{\mathrm{ext}}}{m \cdot L}, \quad \beta_{\mathrm{drift}} \right]$$
+        Rotated into Ego relative body frame using $-\theta_{\mathrm{ego}}$ $\implies$ 10D State Vector $[x, y, v_x, v_y, \theta, r, a_{x,\mathrm{ext}}, a_{y,\mathrm{ext}}, \alpha_{\mathrm{ext}}, \beta_{\mathrm{drift}}]$.
+    \end{block}
+\end{frame}
+
+\begin{frame}{Aerodynamic Wind \& Wave Force Decomposition}
+    \begin{block}{Isherwood Aerodynamic Wind Force Model}
+        $$\begin{aligned}
+        F_{x,\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_T C_{Xw}(\gamma_w) \quad (\rho_a = 1.225\text{ kg/m}^3) \\
+        F_{y,\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_L C_{Yw}(\gamma_w) \\
+        N_{\mathrm{wind}} &= \frac{1}{2} \rho_a V_{rw}^2 A_L L C_{Nw}(\gamma_w)
+        \end{aligned}$$
+        where $A_T \approx 0.8 B^2$ (frontal windage), $A_L \approx L \cdot d_{\mathrm{freeboard}}$ (lateral windage), and $\gamma_w = \theta_w - \psi$.
+    \end{block}
+
+    \begin{block}{Second-Order Mean Wave Drift Force}
+        $$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L C_{Dwy}(\chi)$$
+        where $H_s$ is significant wave height and $C_{Dwy}(\chi)$ is wave drift coefficient.
+    \end{block}
 \end{frame}
 
 \begin{frame}{Stratified Spatial \& Traffic Density Sampling}
-    \begin{block}{Spatial Grid-Cell Binning (\texttt{MAX\_SCENARIOS\_PER_GRID_CELL = 100})}
+    \begin{block}{Spatial Grid-Cell Binning (\texttt{MAX\_SCENARIOS\_PER\_GRID\_CELL = 100})}
         Caps scenario generation at 100 per $5\text{km} \times 5\text{km}$ lat/lon grid box to eliminate geographical port over-representation.
     \end{block}
 
@@ -206,7 +256,7 @@
     \end{itemize}
 \end{frame}
 
-\begin{frame}{Scenario Quality Ranking Engine (\texttt{validate\_scenerios.py})}
+\begin{frame}{Scenario Quality Ranking Engine (\texttt{validate\_scenarios.py})}
     \begin{block}{0--100 Numerical Scenario Quality Score}
         Evaluates and ranks generated scenario XMLs across 5 maritime metrics:
         $$\mathrm{Quality\ Score} = \mathrm{Integrity}(30) + \mathrm{Density}(25) + \mathrm{Maneuver}(20) + \mathrm{Encounter}(15) + \mathrm{Environment}(10)$$
@@ -222,7 +272,7 @@
     \end{block}
 
     \begin{itemize}
-        \item \textbf{CLI Top-K Exporter}: \texttt{--top-k 500 --export-dir ./top_scenarios/} copies top-ranked XMLs automatically.
+        \item \textbf{CLI Top-K Exporter}: \texttt{--top-k 500 --export-dir ./top\_scenarios/} copies top-ranked XMLs automatically.
     \end{itemize}
 \end{frame}
 
@@ -242,7 +292,7 @@
 % ==============================================================================
 % SECTION 3: HIGH-CAPACITY VECTOR SCENE ENCODER
 % ==============================================================================
-\section{High-Capacity Vector Scene Encoder (\texttt{modeling\_dp_vla.py})}
+\section{High-Capacity Vector Scene Encoder (\texttt{modeling\_dp\_vla.py})}
 
 \begin{frame}{High-Capacity Vector Scene Encoder Architecture}
     \begin{block}{Architectural Purpose}
@@ -348,7 +398,7 @@
 
     \begin{alertblock}{Why $\tau_0$-Prediction Beats $\epsilon$-Prediction (HDP Paper Table 1)}
         \begin{itemize}
-            \item $\mathbf{\epsilon}$\textbf{-Prediction}: Low-noise steps produce high-frequency noise estimation errors, resulting in severe trajectory jitter ($51.07$ score).
+            \item $\boldsymbol{\epsilon}$\textbf{-Prediction}: Low-noise steps produce high-frequency noise estimation errors, resulting in severe trajectory jitter ($51.07$ score).
             \item $\mathbf{\tau_0}$\textbf{-Prediction}: Directly predicts clean velocity actions $\hat{\tau}_\theta^v = \tau_\theta(x_t, t, C)$. Captures trajectory manifold smoothly ($85.05$ score).
             \item \textbf{Supervised Velocity Loss}:
               $$\mathcal{L}_{\mathrm{vel}} = \mathrm{MSE}(\hat{\tau}_\theta^v, \tau_0^v)$$
@@ -424,7 +474,7 @@
         \item \textbf{Backend}: \texttt{backend="gloo"} for CPU clusters (\texttt{"nccl"} for CUDA GPUs).
         \item \textbf{Data Sampler}: \texttt{DistributedSampler(dataset)} partitions dataset equally without duplication.
         \item \textbf{CPU Oversubscription Control}:
-          $$\mathrm{OMP\_NUM\_THREADS} = \frac{\text{Physical CPU Cores}}{\text{Processes Per Node}}$$
+          $$\text{OMP\_NUM\_THREADS} = \frac{\text{Physical CPU Cores}}{\text{Processes Per Node}}$$
     \end{itemize}
 
     \begin{exampleblock}{\texttt{torchrun} Multi-Node Execution Command}
@@ -510,9 +560,6 @@
             \item \textbf{Proven Foundation}: Ready for Stage 2 RL post-training to achieve production-grade maritime autonomy.
         \end{itemize}
     \end{block}
-
-  
- 
 \end{frame}
 
 % ==============================================================================
@@ -523,7 +570,6 @@
     \vfill
     \Huge \textcolor{MyOrange}{\textbf{Thank You}} \\
     \vspace{0.5cm}
-   
 \end{frame}
 
 \end{document}
