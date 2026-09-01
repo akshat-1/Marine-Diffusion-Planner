@@ -249,23 +249,34 @@ def get_gdrive_api_service(credentials_path=None):
     SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive']
     creds = None
 
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.abspath(os.path.join(script_dir, ".."))
+    cwd = os.getcwd()
+
     possible_cred_files = [
         credentials_path,
-        "credentials.json",
-        "service_account.json",
-        "client_secrets.json",
-        "token.json",
+        os.path.join(cwd, "credentials.json"),
+        os.path.join(parent_dir, "credentials.json"),
+        os.path.join(script_dir, "credentials.json"),
+        os.path.join(cwd, "service_account.json"),
+        os.path.join(parent_dir, "service_account.json"),
+        os.path.join(script_dir, "service_account.json"),
+        os.path.join(cwd, "client_secrets.json"),
+        os.path.join(parent_dir, "client_secrets.json"),
+        os.path.join(script_dir, "client_secrets.json"),
         os.path.expanduser("~/.config/gdrive/credentials.json")
     ]
     
     cred_file = None
     for p in possible_cred_files:
         if p and os.path.exists(p):
-            cred_file = p
+            cred_file = os.path.abspath(p)
             break
 
     if not cred_file:
         return None
+
+    token_path = os.path.join(os.path.dirname(cred_file), "token.json")
 
     try:
         with open(cred_file, 'r') as f:
@@ -274,17 +285,23 @@ def get_gdrive_api_service(credentials_path=None):
             creds = service_account.Credentials.from_service_account_file(cred_file, scopes=SCOPES)
             log.info(f"🔑 Authenticated using Google Service Account: {data.get('client_email', cred_file)}")
         else:
-            if os.path.exists('token.json'):
-                creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            if os.path.exists(token_path):
+                creds = Credentials.from_authorized_user_file(token_path, SCOPES)
             if not creds or not creds.valid:
                 if creds and creds.expired and creds.refresh_token:
                     creds.refresh(Request())
                 else:
                     flow = InstalledAppFlow.from_client_secrets_file(cred_file, SCOPES)
-                    creds = flow.run_local_server(port=0)
-                with open('token.json', 'w') as token:
+                    log.info(f"🌐 Initiating Google OAuth authorization using '{os.path.basename(cred_file)}'...")
+                    log.info("   A browser window will open for 1-click Google authorization.")
+                    try:
+                        creds = flow.run_local_server(port=0, open_browser=True)
+                    except Exception:
+                        log.info("   (Headless mode detected, displaying auth link):")
+                        creds = flow.run_local_server(port=0, open_browser=False)
+                with open(token_path, 'w') as token:
                     token.write(creds.to_json())
-            log.info("🔑 Authenticated using Google OAuth2 User Credentials.")
+            log.info(f"🔑 Authenticated using Google OAuth2 User Credentials ({os.path.basename(cred_file)}).")
         
         service = build('drive', 'v3', credentials=creds)
         return service
@@ -519,6 +536,9 @@ def run_gdrive_ais_pipeline(
 
     os.makedirs(local_raw_dir, exist_ok=True)
     os.makedirs(local_processed_dir, exist_ok=True)
+
+    # Pre-authenticate Google Drive API service on the main process (triggers OAuth browser prompt ONCE if needed)
+    get_gdrive_api_service(credentials_path)
 
     # Step 1: List all files in Google Drive raw input folder without downloading content
     file_items = get_gdrive_folder_file_list(raw_gdrive_url, credentials_path)
