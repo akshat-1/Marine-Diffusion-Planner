@@ -458,7 +458,7 @@ def process_single_raw_file_item(
             return False
 
     if not os.path.exists(local_raw_path) or os.path.getsize(local_raw_path) == 0:
-        log.warning(f"⚠️ [PID {pid}] Skipping 0-byte or unreadable file: {filename}")
+        log.warning(f"⚠️ [PID {pid}] Skipping 0-byte empty/placeholder raw file: {filename}")
         if os.path.exists(local_raw_path):
             try:
                 os.remove(local_raw_path)
