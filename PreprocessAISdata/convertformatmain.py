@@ -368,10 +368,15 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
         except Exception as e:
             log.error(f"❌ Google Drive API upload failed: {e}")
 
-    # Method 2: PyDrive2 fallback
-    if GoogleDrive is not None:
+    # Method 2: PyDrive2 fallback (only if client_secrets.json exists)
+    if GoogleDrive is not None and (os.path.exists("client_secrets.json") or os.path.exists("credentials.json")):
         try:
             gauth = GoogleAuth()
+            if os.path.exists("client_secrets.json"):
+                gauth.LoadClientConfigFile("client_secrets.json")
+            elif os.path.exists("credentials.json"):
+                gauth.LoadClientConfigFile("credentials.json")
+                
             gauth.LoadCredentialsFile("mycreds.txt")
             if gauth.credentials is None:
                 gauth.CommandLineAuth()
@@ -393,8 +398,8 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
         except Exception as e:
             log.warning(f"⚠️ PyDrive2 upload notice: {e}")
 
-    log.warning(f"ℹ️ Automated OAuth upload requires Google Drive API credentials ('credentials.json').")
-    log.info(f"   Target Folder: https://drive.google.com/drive/folders/{output_folder_id}")
+    log.warning(f"ℹ️ Google Drive API credentials ('credentials.json' / 'client_secrets.json') not found.")
+    log.info(f"   Target Google Drive Folder: https://drive.google.com/drive/folders/{output_folder_id}")
     return False
 
 
@@ -452,11 +457,12 @@ def process_single_raw_file_item(
     processed_path = format_noaa_dataset(local_raw_path, local_processed_path)
 
     # 3. Upload converted file to destination Google Drive folder
+    uploaded_successfully = False
     if processed_path and os.path.exists(processed_path):
-        upload_processed_to_gdrive(processed_path, output_gdrive_url, credentials_path)
+        uploaded_successfully = upload_processed_to_gdrive(processed_path, output_gdrive_url, credentials_path)
 
-    # 4. Immediate Cleanup: Free up disk space before moving to next file!
-    log.info(f"🧹 [PID {pid}] Freeing up disk space for [{idx}/{total_files}]...")
+    # 4. Immediate Cleanup: Free up disk space for raw download file
+    log.info(f"🧹 [PID {pid}] Freeing up raw download disk space for [{idx}/{total_files}]...")
     if os.path.exists(local_raw_path):
         try:
             os.remove(local_raw_path)
@@ -464,12 +470,15 @@ def process_single_raw_file_item(
         except Exception as e:
             log.warning(f"   Could not remove {local_raw_path}: {e}")
 
-    if processed_path and os.path.exists(processed_path):
+    # Only delete local processed file if it was uploaded to Google Drive
+    if uploaded_successfully and processed_path and os.path.exists(processed_path):
         try:
             os.remove(processed_path)
-            log.info(f"   Deleted local processed file: {os.path.basename(processed_path)}")
+            log.info(f"   Deleted local processed file (uploaded to GDrive): {os.path.basename(processed_path)}")
         except Exception as e:
             log.warning(f"   Could not remove {processed_path}: {e}")
+    elif processed_path and os.path.exists(processed_path):
+        log.info(f"💾 Preserved converted file locally in '{local_processed_dir}': {os.path.basename(processed_path)}")
 
     gc.collect()
     log.info(f"✨ [PID {pid}] [{idx}/{total_files}] Complete! Disk space clean.\n")
