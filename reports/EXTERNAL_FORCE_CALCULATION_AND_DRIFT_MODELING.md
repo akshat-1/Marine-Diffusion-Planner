@@ -20,10 +20,10 @@ If a machine learning model is trained purely on position/heading data **without
 As a result, during inference in calm water, the model might execute random sideways drifting maneuvers because it "learned" that ships sometimes move sideways at an angle.
 
 ### The Solution: Physics-Informed Force Residual Conditioning
-By estimating the **External Force Vector** $\mathbf{F}_{\text{ext}} = [F_{x,\text{ext}}, F_{y,\text{ext}}, N_{\text{ext}}, \beta_{\text{drift}}]$ directly from AIS kinematic differentials:
-1. We condition the Diffusion Planner on $\mathbf{F}_{\text{ext}}$.
-2. Under calm conditions ($\mathbf{F}_{\text{ext}} \approx 0$), the model learns pure, unperturbed thrust and rudder control.
-3. Under heavy weather ($\mathbf{F}_{\text{ext}} \neq 0$), the model understands that lateral motion is caused by external forces and learns appropriate counter-steering / crab-angle compensation.
+By estimating the **External Force Vector** $\mathbf{F}_{\mathrm{ext}} = [F_{x,\mathrm{ext}}, F_{y,\mathrm{ext}}, N_{\mathrm{ext}}, \beta_{\mathrm{drift}}]$ directly from AIS kinematic differentials:
+1. We condition the Diffusion Planner on $\mathbf{F}_{\mathrm{ext}}$.
+2. Under calm conditions ($\mathbf{F}_{\mathrm{ext}} \approx 0$), the model learns pure, unperturbed thrust and rudder control.
+3. Under heavy weather ($\mathbf{F}_{\mathrm{ext}} \neq 0$), the model understands that lateral motion is caused by external forces and learns appropriate counter-steering / crab-angle compensation.
 
 ---
 
