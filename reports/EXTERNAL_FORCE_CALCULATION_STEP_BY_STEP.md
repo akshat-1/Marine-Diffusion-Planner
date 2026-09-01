@@ -212,7 +212,7 @@ F_{x,\text{ext}} &= (13,453,125.0 + 672,656.25) \cdot (0.05) - (13,453,125.0 + 6
 F_{y,\text{ext}} &= (13,453,125.0 + 6,442,750.0) \cdot (0.02) + (13,453,125.0 + 672,656.25) \cdot (8.0) \cdot (0.01) - (-76,875.0) \\
 &= 397,917.50 + 1,129,982.50 + 76,875.0 = 1,604,775.00\text{ N} \\
 N_{\text{ext}} &= (18,918,457,031.25 + 7,567,382,812.5) \cdot (0.001) - (-576.56) \\
-&= 26,485,839.84 \cdot 0.001 + 576.56 = 27,062.40\text{ N}\cdot\text{m}
+&= 26,485,839.84 + 576.56 = 26,486,416.40\text{ N}\cdot\text{m}
 \end{aligned}$$
 
 #### 4. Leeway Drift Angle ($\beta_{\text{drift}}$)
@@ -227,7 +227,7 @@ v_{y,\text{world}} &= 8.0 \sin(0.0) + 0.5 \cos(0.0) = 0.5\text{ m/s} \\
 $$\begin{aligned}
 a_{x,\text{ext}} &= \frac{729,809.68\text{ N}}{13,453,125.0\text{ kg}} = 0.05425\text{ m/s}^2 \\
 a_{y,\text{ext}} &= \frac{1,604,775.00\text{ N}}{13,453,125.0\text{ kg}} = 0.11929\text{ m/s}^2 \\
-\alpha_{\text{ext}} &= \frac{27,062.40\text{ N}\cdot\text{m}}{13,453,125.0\text{ kg} \times 150.0\text{ m}} = 0.0000134\text{ rad/s}^2
+\alpha_{\text{ext}} &= \frac{26,486,416.40\text{ N}\cdot\text{m}}{13,453,125.0\text{ kg} \times 150.0\text{ m}} = 0.013125\text{ rad/s}^2
 \end{aligned}$$
 
 ---
