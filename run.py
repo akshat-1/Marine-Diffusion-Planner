@@ -70,10 +70,11 @@ DEFAULT_NUM_THREADS = 3  # Default 3 worker threads as requested
 DEFAULT_RAW_GDRIVE_URL = "https://drive.google.com/drive/folders/1lNzEXWGFiOmJbXxfNqXEcPrz_HOD2jYl?usp=sharing"
 DEFAULT_SCENARIOS_GDRIVE_URL = "https://drive.google.com/drive/folders/1ZwarzUx9ieYriC81-ryMIppdZa3Sucvd?usp=sharing"
 
-LOCAL_TEMP_DIR = os.path.join(SCRIPT_DIR, "Local_Temp_Data")
-LOCAL_RAW_DOWNLOADS_DIR = os.path.join(SCRIPT_DIR, "raw_ais_downloads")
-LOCAL_FORMATTED_DIR = os.path.join(SCRIPT_DIR, "formatted_zst_temp")
-LOCAL_SCENARIOS_DIR = os.path.join(SCRIPT_DIR, "generated_scenarios_temp")
+RUN_SAVED_DIR = os.path.join(SCRIPT_DIR, "run_saved")
+LOCAL_TEMP_DIR = os.path.join(RUN_SAVED_DIR, "Local_Temp_Data")
+LOCAL_RAW_DOWNLOADS_DIR = os.path.join(RUN_SAVED_DIR, "raw_ais_downloads")
+LOCAL_FORMATTED_DIR = os.path.join(RUN_SAVED_DIR, "formatted_zst_temp")
+LOCAL_SCENARIOS_DIR = os.path.join(RUN_SAVED_DIR, "generated_scenarios_temp")
 
 # Thread-safe global scenario counter to guarantee zero filename conflicts and continuous numbering
 GLOBAL_SCENARIO_COUNTER = 0
