@@ -223,7 +223,7 @@ def main():
         print("No valid checkpoint found. Starting training from scratch (Epoch 0).")
 
     for epoch in range(start_epoch, EPOCHS):
-        if sampler is not None:
+        if sampler is not None and hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
         model.train()
         epoch_loss = 0.0
