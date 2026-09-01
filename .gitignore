@@ -18,3 +18,4 @@ raw_ais_downloads/
 processed_ais_outputs/
 formatted_zst_temp/
 generated_scenarios_temp/
+token.json
