@@ -32,6 +32,7 @@ import json
 import logging
 import argparse
 import threading
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 
@@ -348,6 +349,53 @@ def process_file_worker(
     return True
 
 
+def dispatch_remote_worker_node(
+    node_rank: int,
+    world_size: int,
+    worker_host: str,
+    raw_gdrive_url: str,
+    scenarios_gdrive_url: str,
+    num_threads: int,
+    credentials_path: str = None
+) -> bool:
+    """Executes run.py on a remote worker CPU node via SSH and streams stdout logs to Master."""
+    project_dir = os.path.abspath(SCRIPT_DIR)
+    python_bin = sys.executable or "python3"
+
+    ssh_cmd = [
+        "ssh", "-o", "StrictHostKeyChecking=no", worker_host,
+        f"cd '{project_dir}' && '{python_bin}' run.py --node-rank {node_rank} --world-size {world_size} --num-threads {num_threads} --gdrive-input '{raw_gdrive_url}' --gdrive-scenarios-output '{scenarios_gdrive_url}'"
+    ]
+    if credentials_path:
+        ssh_cmd[-1] += f" --credentials '{credentials_path}'"
+
+    log.info(f"🚀 [MASTER DISPATCH] Launching Worker Node Rank {node_rank}/{world_size} on remote host: {worker_host}")
+    log.debug(f"[DEBUG] SSH Command: {' '.join(ssh_cmd)}")
+
+    try:
+        proc = subprocess.Popen(
+            ssh_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        for line in proc.stdout:
+            line_str = line.strip()
+            if line_str:
+                log.info(f"[{worker_host}|Rank{node_rank}] {line_str}")
+        proc.wait()
+        if proc.returncode == 0:
+            log.info(f"✅ [MASTER] Worker Node Rank {node_rank}/{world_size} ({worker_host}) finished successfully!")
+            return True
+        else:
+            log.error(f"❌ [MASTER] Worker Node Rank {node_rank}/{world_size} ({worker_host}) exited with error code {proc.returncode}")
+            return False
+    except Exception as e:
+        log.error(f"❌ [MASTER] Failed SSH dispatch to worker node {worker_host}: {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Master Pipeline Orchestrator
 # ---------------------------------------------------------------------------
@@ -357,15 +405,21 @@ def run_master_pipeline(
     num_threads=DEFAULT_NUM_THREADS,
     credentials_path=None,
     node_rank=0,
-    world_size=1
+    world_size=1,
+    worker_hosts=None
 ):
     """Orchestrates multi-threaded end-to-end AIS conversion and scenario generation across CPU cluster nodes."""
+    if worker_hosts and node_rank == 0:
+        world_size = 1 + len(worker_hosts)
+
     log.info("=========================================================================")
-    log.info("🚢 MASTER MARITIME AIS PIPELINE: CLUSTER MULTI-NODE END-TO-END CONVERTER")
+    log.info("🚢 MASTER MARITIME AIS PIPELINE: CLUSTER MASTER-WORKER CONVERTER")
     log.info("=========================================================================")
     log.info(f"Input Raw AIS Google Drive:       {raw_gdrive_url}")
     log.info(f"Output Scenarios Google Drive:   {scenarios_gdrive_url}")
     log.info(f"Cluster Configuration:           Node {node_rank} of {world_size} Total Cluster Nodes")
+    if worker_hosts and node_rank == 0:
+        log.info(f"Managed Worker Hosts ({len(worker_hosts)}):   {', '.join(worker_hosts)}")
     log.info(f"Parallel Worker Threads:         {num_threads} Threads per Node")
     log.info("Strategy:                        Zero-Duplication Modulo Partitioning & Real-Time Streaming")
     log.info("=========================================================================\n")
@@ -376,7 +430,21 @@ def run_master_pipeline(
     # 2. Pre-authenticate Google Drive Service on main thread (pop-up OAuth browser prompt once if needed)
     get_gdrive_api_service(credentials_path)
 
-    # 3. Retrieve raw file metadata from Google Drive input folder without downloading content
+    # 3. If Master Node (Rank 0) and worker_hosts are specified: Dispatch remote workers asynchronously
+    remote_executor = None
+    remote_futures = []
+    if node_rank == 0 and worker_hosts:
+        log.info(f"👑 [MASTER NODE] Auto-dispatching pipeline across {len(worker_hosts)} remote worker nodes...")
+        remote_executor = ThreadPoolExecutor(max_workers=len(worker_hosts), thread_name_prefix="MasterSSH")
+        for idx, host in enumerate(worker_hosts, 1):
+            remote_rank = idx
+            f = remote_executor.submit(
+                dispatch_remote_worker_node,
+                remote_rank, world_size, host, raw_gdrive_url, scenarios_gdrive_url, num_threads, credentials_path
+            )
+            remote_futures.append(f)
+
+    # 4. Retrieve raw file metadata from Google Drive input folder without downloading content
     file_items = get_gdrive_folder_file_list(raw_gdrive_url, credentials_path)
 
     if not file_items:
@@ -390,7 +458,7 @@ def run_master_pipeline(
 
     total_remote_files = len(file_items)
 
-    # 4. Multi-Node Cluster Disjoint Partitioning (Zero raw file processing duplication)
+    # 5. Multi-Node Cluster Disjoint Partitioning (Zero raw file processing duplication)
     if world_size > 1:
         node_file_items = [
             item for idx, item in enumerate(file_items)
@@ -401,27 +469,36 @@ def run_master_pipeline(
 
     if not file_items:
         log.info(f"✨ Node Rank {node_rank}/{world_size}: No raw files assigned to this node rank.")
-        return
+    else:
+        total_files = len(file_items)
+        log.info(f"🔄 Starting multi-threaded pipeline for {total_files} assigned raw files across {num_threads} worker threads...\n")
 
-    total_files = len(file_items)
-    log.info(f"🔄 Starting multi-threaded pipeline for {total_files} assigned raw files across {num_threads} worker threads...\n")
+        # 6. Multithreaded Execution via ThreadPoolExecutor for local rank tasks
+        num_threads = max(1, int(num_threads))
+        with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix=f"Node{node_rank}Worker") as executor:
+            futures = [
+                executor.submit(
+                    process_file_worker,
+                    item, idx, total_files, shp_filepath, raw_gdrive_url, scenarios_gdrive_url, credentials_path, node_rank, world_size
+                )
+                for idx, item in enumerate(file_items, 1)
+            ]
+            
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    log.error(f"❌ Thread execution error: {e}")
 
-    # 5. Multithreaded Execution via ThreadPoolExecutor
-    num_threads = max(1, int(num_threads))
-    with ThreadPoolExecutor(max_workers=num_threads, thread_name_prefix=f"Node{node_rank}Worker") as executor:
-        futures = [
-            executor.submit(
-                process_file_worker,
-                item, idx, total_files, shp_filepath, raw_gdrive_url, scenarios_gdrive_url, credentials_path, node_rank, world_size
-            )
-            for idx, item in enumerate(file_items, 1)
-        ]
-        
-        for future in as_completed(futures):
+    # 7. Master waits for all remote worker nodes to finish
+    if remote_executor is not None:
+        log.info("⏳ [MASTER NODE] Waiting for all remote worker nodes to finish processing...")
+        for f in as_completed(remote_futures):
             try:
-                future.result()
+                f.result()
             except Exception as e:
-                log.error(f"❌ Thread execution error: {e}")
+                log.error(f"❌ Remote worker dispatch error: {e}")
+        remote_executor.shutdown(wait=True)
 
     os.system('sync')
     log.info(f"\n🎉 Node Rank {node_rank}/{world_size} completed! All assigned raw datasets converted, uploaded, and disk space cleaned!")
@@ -439,11 +516,21 @@ if __name__ == "__main__":
     parser.add_argument("--num-threads", type=int, default=DEFAULT_NUM_THREADS, help=f"Number of parallel worker threads per node (default: {DEFAULT_NUM_THREADS})")
     parser.add_argument("--node-rank", type=int, default=env_node_rank, help=f"Cluster Node Rank ID (default: auto-detected env NODE_RANK/RANK or {env_node_rank})")
     parser.add_argument("--world-size", type=int, default=env_world_size, help=f"Total Number of Cluster Nodes (default: auto-detected env WORLD_SIZE/NNODES or {env_world_size})")
+    parser.add_argument("--workers", type=str, default=None, help="Comma-separated list of remote worker hostnames/IPs for Master to manage (e.g., '192.168.1.101,192.168.1.102')")
+    parser.add_argument("--hosts-file", type=str, default=None, help="Path to text file containing list of worker hostnames/IPs (one per line)")
     parser.add_argument("--gdrive-input", type=str, default=DEFAULT_RAW_GDRIVE_URL, help="Input Raw AIS Google Drive Folder URL or ID")
     parser.add_argument("--gdrive-scenarios-output", type=str, default=DEFAULT_SCENARIOS_GDRIVE_URL, help="Output Scenarios Google Drive Folder URL or ID")
     parser.add_argument("--credentials", type=str, default=None, help="Path to Google Drive OAuth2 / Service Account credentials JSON")
 
     args = parser.parse_args()
+
+    # Parse worker hosts from --workers flag or --hosts-file
+    worker_hosts_list = []
+    if args.workers:
+        worker_hosts_list = [h.strip() for h in args.workers.split(",") if h.strip()]
+    elif args.hosts_file and os.path.exists(args.hosts_file):
+        with open(args.hosts_file, "r") as f:
+            worker_hosts_list = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
 
     run_master_pipeline(
         raw_gdrive_url=args.gdrive_input,
@@ -451,5 +538,6 @@ if __name__ == "__main__":
         num_threads=args.num_threads,
         credentials_path=args.credentials,
         node_rank=args.node_rank,
-        world_size=args.world_size
+        world_size=args.world_size,
+        worker_hosts=worker_hosts_list
     )
