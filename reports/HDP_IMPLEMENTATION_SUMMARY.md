@@ -8,37 +8,37 @@ This document summarizes the changes made to align the codebase with the **Hyper
 **Paper Reference:** Appendix D.4 - "We adopt the variance-preserving(VP) noise schedule following Zheng et al. (2025)"
 
 **Implementation:** `utils/diffusion.py` - `_vp_beta_schedule()` method
-- Continuous VP schedule: β(t) = β_min + t × (β_max - β_min)
-- α_t = exp(-½ ∫₀ᵗ β(s) ds) = exp(-(β_min×t + (β_max-β_min)×t²/2)/2)
-- β_min = 0.0001, β_max = 0.02 (matching paper's Table 6)
+- Continuous VP schedule: $\beta(t) = \beta_{\min} + t \times (\beta_{\max} - \beta_{\min})$
+- $\alpha_t = \exp\left(-\frac{1}{2} \int_0^t \beta(s) ds\right) = \exp\left(-\frac{\beta_{\min} t + (\beta_{\max}-\beta_{\min}) t^2 / 2}{2}\right)$
+- $\beta_{\min} = 0.0001, \beta_{\max} = 0.02$ (matching paper's Table 6)
 
-### 2. τ₀-Prediction (Direct Velocity Prediction)
-**Paper Reference:** Section 4.1 - "τ₀-prediction model with τ₀-loss yields both fast convergence and high-quality generation"
+### 2. $\tau_0$-Prediction (Direct Velocity Prediction)
+**Paper Reference:** Section 4.1 - "$\tau_0$-prediction model with $\tau_0$-loss yields both fast convergence and high-quality generation"
 
 **Implementation:** 
-- `utils/diffusion.py`: `q_sample()` uses x_t = α_t × x_0 + σ_t × ε
-- `model/dit.py`: DiT outputs clean velocity trajectory x_0 directly (not noise ε)
-- `train.py`: Training loss compares predicted x_0 with ground truth velocity
+- `utils/diffusion.py`: `q_sample()` uses $x_t = \alpha_t x_0 + \sigma_t \varepsilon$
+- `model/dit.py`: DiT outputs clean velocity trajectory $x_0$ directly (not noise $\varepsilon$)
+- `train.py`: Training loss compares predicted $x_0$ with ground truth velocity
 
 ### 3. Velocity Representation with Hybrid Loss
 **Paper Reference:** Section 4.2 - "Hybrid Loss" + Appendix D.3 Algorithm 1
 
 **Implementation:** `utils/diffusion.py` - `hybrid_loss()` and `detached_integral()`
-- Velocity loss: ||v_θ - v_0||²
+- Velocity loss: $\|v_\theta - v_0\|^2$
 - Waypoint loss with detached integral (window W=3):
   ```
   ŵ = M_W v_θ Δt + sg((M - M_W) v_θ Δt)
   L_waypoints = ||ŵ - w_0||²
   ```
-- Total loss: L_hybrid = L_velocity + ω × L_waypoints (ω = 0.1 from Table 6)
+- Total loss: $L_{\text{hybrid}} = L_{\text{velocity}} + \omega \times L_{\text{waypoints}}$ ($\omega = 0.1$ from Table 6)
 
 ### 4. DPM-Solver for Fast Sampling (6 Steps)
 **Paper Reference:** Appendix D.4 - "employs the DPM-Solver (Lu et al., 2022) to accelerate the sampling process, achieving a final inference speed that easily meets the 10Hz requirement"
 
 **Implementation:** `utils/diffusion.py` - `dpm_solver_sample()` method
 - 2nd order DPM-Solver with 6 sampling steps
-- Uses log-SNR (λ) space for adaptive step sizes
-- τ₀-prediction compatible (model outputs x_0 directly)
+- Uses log-SNR ($\lambda$) space for adaptive step sizes
+- $\tau_0$-prediction compatible (model outputs $x_0$ directly)
 
 ### 5. Model Architecture Updates
 **Paper Reference:** Table 6 - "Num. block: 6, Dim. hidden layer: 256, Num. multi-head: 8"
@@ -47,7 +47,7 @@ This document summarizes the changes made to align the codebase with the **Hyper
 - 6 transformer decoder layers (was 4)
 - 8 attention heads (unchanged)
 - 256 embedding dim (unchanged)
-- Output: 4D velocity [vx, vy, theta, yaw_rate] (was 6D including position)
+- Output: 4D velocity [`vx`, `vy`, `theta`, `yaw_rate`] (was 6D including position)
 
 ### 6. Training Hyperparameters (Table 6)
 **Implementation:** `train.py`

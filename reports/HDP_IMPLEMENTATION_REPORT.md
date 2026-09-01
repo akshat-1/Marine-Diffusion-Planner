@@ -62,11 +62,11 @@ def __init__(self, ..., num_layers=4, feature_dim=6):
 
 **Before:** Linear schedule `torch.linspace(0.0001, 0.02, 1000)`
 
-**After:** Discrete linear schedule β_t = β_start + t * (β_end - β_start) / (T-1) as commonly used in standard diffusion practice, approximating the continuous VP schedule.
+**After:** Discrete linear schedule $\beta_t = \beta_{\text{start}} + t \cdot (\beta_{\text{end}} - \beta_{\text{start}}) / (T-1)$ as commonly used in standard diffusion practice, approximating the continuous VP schedule.
 
 **Why:** Paper Appendix D.4 explicitly states: *"We adopt the variance-preserving(VP) noise schedule"*
 
-**Source:** HDP Paper, Appendix D.4, Table 6 (β_min=0.0001, β_max=0.02)
+**Source:** HDP Paper, Appendix D.4, Table 6 ($\beta_{\min}=0.0001, \beta_{\max}=0.02$)
 
 ...
 

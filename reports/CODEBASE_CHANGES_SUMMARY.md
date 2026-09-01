@@ -107,7 +107,7 @@ Integrated PyTorch DDP for CPU cluster training:
 |-----------|------------------|--------------------------|
 | `preparedataset.py` | Bug Fix & Enhancement | 1. Body-to-world velocity conversion in `_extract_state_features`.<br>2. Added `_resample_vertices()` for uniform arc-length polyline sampling.<br>3. Filtered extreme displacement (>8km) windows in `_build_index_map`. |
 | `train.py` | Architecture & Pipeline Fix | 1. Updated `model_type` to `"x_start"` ($\tau_0$-pred).<br>2. Corrected spatial waypoint targets vs velocity action targets.<br>3. Applied $\Delta t=10.0\text{s}$ scaling to `detached_integral`.<br>4. Integrated `ExponentialMovingAverage` (decay=0.999).<br>5. Added CPU Cluster DDP (`gloo` backend) and `DistributedSampler`.<br>6. Added PyTorch AMP (`torch.amp.autocast`) & `OneCycleLR`. |
-| `utils/__init__.py` | Feature Addition | Added `ExponentialMovingAverage` class with update, shadow apply, restore, and state_dict methods. |
+| `utils/__init__.py` | Feature Addition | Added `ExponentialMovingAverage` class with update, shadow apply, restore, and `state_dict` methods. |
 | `ISSUES.md` | Documentation | Tracked all resolved issues and remaining roadmap features. |
 | `reports/PAPER_VS_CODEBASE_AUDIT.md` | Report | Detailed 5-point audit of codebase vs arXiv:2602.22801v2. |
 | `reports/preparedataset_analysis.md` | Report | Detailed mathematical analysis of `preparedataset.py`. |

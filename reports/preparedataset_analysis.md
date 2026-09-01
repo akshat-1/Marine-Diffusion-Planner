@@ -18,7 +18,7 @@ This document provides an in-depth analysis of `preparedataset.py`, assessing:
 ### Key Attributes:
 | Name           | Shape                      | Description                                 |
 |----------------|----------------------------|---------------------------------------------|
-| `ego_history`  | `(obs_frames, 6)`          | [x, y, velocity_x, velocity_y, heading, yaw_rate] rows. |
+| `ego_history`  | `(obs_frames, 6)`          | [`x`, `y`, `velocity_x`, `velocity_y`, `heading`, `yaw_rate`] rows. |
 | `agents_hist`  | `(max_agents, obs, 6)`     | Same as `ego_history` but for other ships. |
 | `map_lines`    | `(max_polylines, max_pts)` | Stores coastline x-y after egotransform. |
 
@@ -75,7 +75,7 @@ def _extract_state_features(self, state):
     ])
 ```
 
-**Note:** CommonOcean states provide `velocity` (surge_u) and `velocity_y` (sway_v) as separate components already in vessel body frame.
+**Note:** CommonOcean states provide `velocity` (`surge_u`) and `velocity_y` (`sway_v`) as separate components already in vessel body frame.
 
 ---
 ## Data Flow Pipeline
@@ -130,7 +130,7 @@ def _extract_state_features(self, state):
 - **7 StaticObstacles** found (all `ObstacleType.LAND`)
 - Vertices are `numpy.ndarray` with shape `(N, 2)` ✓
 - Example vertex counts: 192, 748, 160, 73, 9, 13, 806
-- **Transformation works correctly** — map_lines tensor produced with valid coordinates
+- **Transformation works correctly** — `map_lines` tensor produced with valid coordinates
 
 **Compatibility Result: ✓ COMPATIBLE**
 
@@ -216,7 +216,7 @@ dist = torch.norm(map_flat, dim=-1, keepdim=True)
 map_feats_5d = torch.cat([map_flat, delta, dist], dim=-1)  # (x, y, dx, dy, dist)
 ```
 
-The dataset provides only `(x, y)`, but encoder expects to compute `delta` and `dist` internally. This **works** because encoder computes it, but means map_lines wastes capacity (could precompute).
+The dataset provides only `(x, y)`, but encoder expects to compute `delta` and `dist` internally. This **works** because encoder computes it, but means `map_lines` wastes capacity (could precompute).
 
 ### 5. XML Corruption Tolerance
 
@@ -256,7 +256,7 @@ for k, v in s.items():
 ### Expected Clean Output (after velocity fix):
 - `ego_history[:, :2]` range ~ [-100, 100] meters (within scene radius)
 - `ego_history[:, 2:4]` range ~ [-10, 10] m/s (reasonable vessel speeds)
-- `map_lines` range ~ [-8000, 8000] meters (coastlines within MAX_SCENE_RADIUS_M)
+- `map_lines` range ~ [-8000, 8000] meters (coastlines within `MAX_SCENE_RADIUS_M`)
 
 ---
 ## Conclusion

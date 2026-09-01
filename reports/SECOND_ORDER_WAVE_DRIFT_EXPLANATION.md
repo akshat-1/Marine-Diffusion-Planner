@@ -61,7 +61,7 @@ $$a_{y,\text{ext}} = \frac{F_{y,\text{ext}}}{m} = \frac{F_{y,\text{wind}} + F_{y
 
 This specific lateral acceleration $a_{y,\text{ext}}$ is placed directly into channel 7 of the **10D State Feature Vector**:
 
-$$\mathbf{x}_{\text{state}} = [x, y, v_x, v_y, \theta, r, a_{x,\text{ext}}, \mathbf{a_{y,\text{ext}}}, \alpha_{\text{ext}}, \beta_{\text{drift}}]$$
+$$\mathbf{x}_{\text{state}} = [x, y, v_x, v_y, \theta, r, a_{x,\text{ext}}, \mathbf{a}_{y,\text{ext}}, \alpha_{\text{ext}}, \beta_{\text{drift}}]$$
 
 ---
 
