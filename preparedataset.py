@@ -5,6 +5,41 @@ from torch.utils.data import Dataset
 # Assuming you use commonocean/commonroad XML readers, or a lightweight custom XML parser
 from commonocean.common.file_reader import CommonOceanFileReader
 
+def compute_external_forces(u, v, r, du_dt, dv_dt, dr_dt, heading, cog, length=150.0, width=25.0, draft=5.0):
+    """
+    Computes 4D hydrodynamic external force residual vector:
+    [Fx_ext/m, Fy_ext/m, N_ext/(m*L), beta_drift]
+    """
+    rho_w = 1025.0  # Seawater density kg/m^3
+    Cb = 0.70       # Block coefficient
+    length = max(length, 10.0)
+    width = max(width, 2.0)
+    draft = max(draft, 1.0)
+
+    # 1. Mass & Added Mass
+    m = rho_w * Cb * length * width * draft
+    mx = 0.05 * m
+    my = rho_w * (np.pi / 2.0) * (draft ** 2) * length * (1.0 + 0.4 * (width / length))
+    Iz = m * (0.25 * length) ** 2
+    Jz = 0.025 * m * (length ** 2)
+
+    # 2. Baseline Hull Damping & Cross-Flow Resistance
+    Fx_hull = -0.5 * rho_w * 0.03 * (width * draft) * u * abs(u)
+    Fy_hull = -0.5 * rho_w * 0.80 * (length * draft) * v * abs(v)
+    N_hull = -(1.0 / 16.0) * rho_w * 0.80 * (length ** 2) * draft * r * abs(r)
+
+    # 3. Inverse Dynamics Residuals
+    Fx_ext = (m + mx) * du_dt - (m + my) * v * r - Fx_hull
+    Fy_ext = (m + my) * dv_dt + (m + mx) * u * r - Fy_hull
+    N_ext = (Iz + Jz) * dr_dt - N_hull
+
+    # 4. Drift Angle
+    beta_drift = (cog - heading + np.pi) % (2.0 * np.pi) - np.pi
+
+    # Acceleration scale for numerical stability: (m/s^2, m/s^2, rad/s^2, rad)
+    return np.array([Fx_ext / m, Fy_ext / m, N_ext / (m * length), beta_drift], dtype=np.float32)
+
+
 class AISScenarioDataset(Dataset):
     def __init__(self, scenario_dir, obs_frames=20, pred_frames=20, max_agents=10, max_polylines=20):
         super().__init__()
@@ -77,22 +112,43 @@ class AISScenarioDataset(Dataset):
     def __len__(self):
         return len(self.index_map)
 
-    def _extract_state_features(self, state):
-        # Extracts features converting body-frame surge/sway to world-frame velocities:
-        # [x, y, vx_world, vy_world, heading, yaw_rate]
+    def _extract_state_features(self, state, prev_state=None, dt=10.0, length=150.0, width=25.0, draft=5.0):
+        # Extracts 10D feature vector:
+        # [x, y, vx_world, vy_world, heading, yaw_rate, Fx_ext, Fy_ext, N_ext, beta_drift]
         u = state.velocity
         v = state.velocity_y
         theta = state.orientation
+        r = state.yaw_rate
         vx_world = u * np.cos(theta) - v * np.sin(theta)
         vy_world = u * np.sin(theta) + v * np.cos(theta)
+        cog = np.arctan2(vy_world, vx_world)
+
+        if prev_state is not None:
+            u_prev = prev_state.velocity
+            v_prev = prev_state.velocity_y
+            r_prev = prev_state.yaw_rate
+            du_dt = (u - u_prev) / dt
+            dv_dt = (v - v_prev) / dt
+            dr_dt = (r - r_prev) / dt
+        else:
+            du_dt, dv_dt, dr_dt = 0.0, 0.0, 0.0
+
+        fx, fy, n_ext, beta = compute_external_forces(
+            u, v, r, du_dt, dv_dt, dr_dt, theta, cog, length, width, draft
+        )
+
         return np.array([
             state.position[0], 
             state.position[1], 
             vx_world, 
             vy_world, 
             theta, 
-            state.yaw_rate
-        ])
+            r,
+            fx,
+            fy,
+            n_ext,
+            beta
+        ], dtype=np.float32)
 
     def _resample_vertices(self, vertices, n_points=20):
         """Resample polygon vertices to uniform arc-length spacing."""
@@ -113,7 +169,11 @@ class AISScenarioDataset(Dataset):
 
     def _transform_to_egocentric(self, features, ego_x, ego_y, ego_theta):
         """Applies translation and rotation to center the scene on the ego vessel."""
-        x, y, vx, vy, theta, yaw_rate = features
+        if len(features) >= 10:
+            x, y, vx, vy, theta, yaw_rate, fx, fy, n_ext, beta = features[:10]
+        else:
+            x, y, vx, vy, theta, yaw_rate = features[:6]
+            fx, fy, n_ext, beta = 0.0, 0.0, 0.0, 0.0
         
         # Translate
         dx = x - ego_x
@@ -129,10 +189,14 @@ class AISScenarioDataset(Dataset):
         rel_vx = cos_t * vx - sin_t * vy
         rel_vy = sin_t * vx + cos_t * vy
         
+        # Rotate external force vector into Ego body frame
+        rel_fx = cos_t * fx - sin_t * fy
+        rel_fy = sin_t * fx + cos_t * fy
+        
         # Relative heading
         rel_theta = (theta - ego_theta + np.pi) % (2 * np.pi) - np.pi
         
-        return np.array([rel_x, rel_y, rel_vx, rel_vy, rel_theta, yaw_rate], dtype=np.float32)
+        return np.array([rel_x, rel_y, rel_vx, rel_vy, rel_theta, yaw_rate, rel_fx, rel_fy, n_ext, beta], dtype=np.float32)
 
     def __getitem__(self, idx):
         mapping = self.index_map[idx]
@@ -149,26 +213,31 @@ class AISScenarioDataset(Dataset):
         # Extract Ego Vehicle
         ego_vessel = scenario.obstacle_by_id(ego_id)
         ego_states = [ego_vessel.initial_state] + ego_vessel.prediction.trajectory.state_list
-        
+        ego_len = float(getattr(ego_vessel.obstacle_shape, 'length', 150.0))
+        ego_wid = float(getattr(ego_vessel.obstacle_shape, 'width', 25.0))
+        ego_draft = float(getattr(ego_vessel, 'depth', 5.0) or 5.0)
+
         # Get the anchor state at T=current for coordinate transformation
         anchor_state = ego_states[t_current]
         ego_x, ego_y = anchor_state.position
         ego_theta = anchor_state.orientation
         
-        # 1. Build Ego History Tensor
-        ego_history = np.zeros((self.obs_frames, 6), dtype=np.float32)
+        # 1. Build Ego History Tensor (10D features)
+        ego_history = np.zeros((self.obs_frames, 10), dtype=np.float32)
         for i, t in enumerate(range(t_start, t_start + self.obs_frames)):
-            raw_feats = self._extract_state_features(ego_states[t])
+            prev_st = ego_states[t - 1] if t > 0 else None
+            raw_feats = self._extract_state_features(ego_states[t], prev_st, dt=scenario.dt, length=ego_len, width=ego_wid, draft=ego_draft)
             ego_history[i] = self._transform_to_egocentric(raw_feats, ego_x, ego_y, ego_theta)
             
-        # 2. Build Ego Target Tensor (What the DiT needs to predict)
-        ego_target = np.zeros((self.pred_frames, 6), dtype=np.float32)
+        # 2. Build Ego Target Tensor (10D features)
+        ego_target = np.zeros((self.pred_frames, 10), dtype=np.float32)
         for i, t in enumerate(range(t_current + 1, t_current + 1 + self.pred_frames)):
-            raw_feats = self._extract_state_features(ego_states[t])
+            prev_st = ego_states[t - 1]
+            raw_feats = self._extract_state_features(ego_states[t], prev_st, dt=scenario.dt, length=ego_len, width=ego_wid, draft=ego_draft)
             ego_target[i] = self._transform_to_egocentric(raw_feats, ego_x, ego_y, ego_theta)
             
-        # 3. Build Agent History Tensor
-        agents_history = np.zeros((self.max_agents, self.obs_frames, 6), dtype=np.float32)
+        # 3. Build Agent History Tensor (10D features)
+        agents_history = np.zeros((self.max_agents, self.obs_frames, 10), dtype=np.float32)
         agent_mask = np.ones((self.max_agents,), dtype=bool) # True means pad/ignore
         
         agent_idx = 0
@@ -177,13 +246,17 @@ class AISScenarioDataset(Dataset):
                 continue
                 
             obs_states = [obs.initial_state] + obs.prediction.trajectory.state_list
-            # Ensure agent existed during this specific time window
             if len(obs_states) <= t_current:
                 continue
                 
+            ag_len = float(getattr(obs.obstacle_shape, 'length', 150.0))
+            ag_wid = float(getattr(obs.obstacle_shape, 'width', 25.0))
+            ag_draft = float(getattr(obs, 'depth', 5.0) or 5.0)
+
             agent_mask[agent_idx] = False
             for i, t in enumerate(range(t_start, t_start + self.obs_frames)):
-                raw_feats = self._extract_state_features(obs_states[t])
+                prev_st = obs_states[t - 1] if t > 0 else None
+                raw_feats = self._extract_state_features(obs_states[t], prev_st, dt=scenario.dt, length=ag_len, width=ag_wid, draft=ag_draft)
                 agents_history[agent_idx, i] = self._transform_to_egocentric(raw_feats, ego_x, ego_y, ego_theta)
                 
             agent_idx += 1

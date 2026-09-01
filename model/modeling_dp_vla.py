@@ -45,15 +45,15 @@ class DpVlaModelOutput:
 class LightweightContextEncoder(nn.Module):
     """Lightweight context encoder fallback for simple baseline inputs."""
 
-    def __init__(self, hidden_size: int = 1024):
+    def __init__(self, hidden_size: int = 1024, in_dim: int = 10):
         super().__init__()
         self.ego_proj = nn.Sequential(
-            nn.Linear(6, 256),
+            nn.Linear(in_dim, 256),
             nn.GELU(),
             nn.Linear(256, hidden_size),
         )
         self.agent_proj = nn.Sequential(
-            nn.Linear(6, 256),
+            nn.Linear(in_dim, 256),
             nn.GELU(),
             nn.Linear(256, hidden_size),
         )
@@ -113,13 +113,14 @@ class HighCapacityVectorSceneEncoder(nn.Module):
         dropout: float = 0.1,
         max_obs_frames: int = 20,
         map_points: int = 20,
+        in_dim: int = 10,
     ):
         super().__init__()
         self.hidden_size = hidden_size
 
         # --- 1. Ego Trajectory Sub-Encoder ---
         self.ego_feature_proj = nn.Sequential(
-            nn.Linear(6, 128),
+            nn.Linear(in_dim, 128),
             nn.GELU(),
             nn.Linear(128, hidden_size),
         )
@@ -127,7 +128,7 @@ class HighCapacityVectorSceneEncoder(nn.Module):
 
         # --- 2. Agent Trajectory Sub-Encoder ---
         self.agent_feature_proj = nn.Sequential(
-            nn.Linear(6, 128),
+            nn.Linear(in_dim, 128),
             nn.GELU(),
             nn.Linear(128, hidden_size),
         )
@@ -214,8 +215,8 @@ class HighCapacityVectorSceneEncoder(nn.Module):
 
         # 2. Process Agent Tokens (N_ag * 4 sub-tokens)
         if agents is not None and agents.numel() > 0:
-            N_ag = agents.shape[1]
-            ag_flat = agents.view(B * N_ag, T_obs, 6)
+            N_ag, D_ag = agents.shape[1], agents.shape[-1]
+            ag_flat = agents.view(B * N_ag, T_obs, D_ag)
             ag_feat = self.agent_feature_proj(ag_flat) + self.agent_pos_embed[:, :T_obs, :]
             ag_trans = self.agent_temporal_transformer(ag_feat)
             ag_pooled = self.agent_temporal_pool(ag_trans.transpose(1, 2)).transpose(1, 2)

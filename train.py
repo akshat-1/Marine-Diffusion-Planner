@@ -146,11 +146,11 @@ def main():
     raw_model = model.module if is_distributed else model
     ema = ExponentialMovingAverage(raw_model, decay=0.999)
 
-    # Feature Z-Score Normalizers (HDP Paper Specification)
-    # [x, y, vx, vy, theta, yaw_rate]
+    # Feature Z-Score Normalizers (HDP Paper Specification - 10D State Vectors)
+    # [x, y, vx, vy, theta, yaw_rate, Fx_ext, Fy_ext, N_ext, beta_drift]
     state_normalizer = ZScoreNormalizer(
-        mean=[0.0, 0.0, 3.5, 0.0, 0.0, 0.0],
-        std=[100.0, 100.0, 3.0, 1.0, 1.0, 0.05],
+        mean=[0.0, 0.0, 3.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        std=[100.0, 100.0, 3.0, 1.0, 1.0, 0.05, 1.0, 1.0, 0.5, 0.5],
     ).to(device)
     map_normalizer = ZScoreNormalizer(
         mean=[0.0, 0.0],
@@ -249,11 +249,12 @@ def main():
             # Sample noise and timesteps via official DiffusionSDE
             action_with_noise, t, target_dict = diffusion_sde.sample(model_actions)
 
-            # Construct proprioception conditioning (ego latest status)
+            # Construct proprioception conditioning (ego latest status including external forces)
+            dim_state = ego_hist.shape[-1]
             proprio = torch.cat([
                 ego_hist[:, -1, :],
-                torch.zeros((ego_hist.shape[0], config.dim_y - 6), device=device)
-            ], dim=-1)
+                torch.zeros((ego_hist.shape[0], max(0, config.dim_y - dim_state)), device=device)
+            ], dim=-1)[:, :config.dim_y]
 
             # Encode context
             enc_out = model.fallback_encoder(ego_hist, agents, map_lines, agent_mask, map_mask)

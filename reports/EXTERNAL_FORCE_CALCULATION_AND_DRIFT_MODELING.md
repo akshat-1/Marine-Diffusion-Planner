@@ -215,21 +215,45 @@ def compute_external_forces(u, v, r, du_dt, dv_dt, dr_dt, heading, cog, length, 
 
 ---
 
-### Step 5.2: Proprioception Conditioning in `train.py` & `modeling_dp_vla.py`
-In `train.py`, pass the latest external force status $\mathbf{F}_{\text{ext}}$ into the proprioception vector $y$:
+### Step 5.2: Proprioception & Model Conditioning Strategy
+In `train.py`, pass the latest external force status $\mathbf{F}_{\mathrm{ext}}$ into the proprioception vector $y$ consumed by the `CustomDiT` decoder:
 
 ```python
 # Construct proprioception vector (6 kinematic states + 4 force/drift states)
+# Shape: (B, 12) where first 10 elements are latest Ego state including [Fx_ext, Fy_ext, N_ext, beta]
 proprio = torch.cat([
-    ego_hist[:, -1, :],  # latest ego state including [Fx_ext, Fy_ext, N_ext, beta]
+    ego_hist[:, -1, :],  # (B, 10)
     torch.zeros((ego_hist.shape[0], config.dim_y - 10), device=device)
 ], dim=-1)
 ```
 
 ---
 
+### Step 5.3: Model Architecture Modifications (`model/modeling_dp_vla.py`)
+
+To process the 10D feature vector in both the Scene Encoder and the DiT Decoder:
+
+1. **`HighCapacityVectorSceneEncoder` Input Projections**:
+   - `ego_feature_proj`: Update `nn.Linear(6, 128)` $\to$ `nn.Linear(10, 128)`.
+   - `agent_feature_proj`: Update `nn.Linear(6, 128)` $\to$ `nn.Linear(10, 128)`.
+
+2. **`LightweightContextEncoder` Input Projections**:
+   - `ego_proj`: Update `nn.Linear(6, 256)` $\to$ `nn.Linear(10, 256)`.
+   - `agent_proj`: Update `nn.Linear(6, 256)` $\to$ `nn.Linear(10, 256)`.
+
+3. **`ZScoreNormalizer` Channel Means & Standard Deviations (`train.py`)**:
+   - Update `state_normalizer` to normalize all 10 feature channels:
+   ```python
+   # 10D Feature channels: [x, y, vx, vy, theta, r, Fx_ext, Fy_ext, N_ext, beta_drift]
+   feature_mean = [0.0, 0.0, 3.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+   feature_std  = [100.0, 100.0, 3.0, 1.0, 1.0, 0.05, 1.0, 1.0, 0.5, 0.5]
+   state_normalizer = ZScoreNormalizer(feature_mean, feature_std).to(device)
+   ```
+
+---
+
 ## 6. Summary of Benefits
 
 1. **Eliminates False Steering Inferences**: The model stops learning "phantom drifting turns" because lateral movement is explicitly attributed to external force conditioning.
-2. **Physics-Consistent Control**: In calm water ($F_{\text{ext}} \approx 0$), the planner outputs clean hydrodynamic vessel trajectories.
-3. **Adaptive Weather Compensation**: In heavy weather ($F_{\text{ext}} \neq 0$), the model learns to maintain proper crab angle and counter-steering to keep the desired channel path.
+2. **Physics-Consistent Control**: In calm water ($F_{\mathrm{ext}} \approx 0$), the planner outputs clean hydrodynamic vessel trajectories.
+3. **Adaptive Weather Compensation**: In heavy weather ($F_{\mathrm{ext}} \neq 0$), the model learns to maintain proper crab angle and counter-steering to keep the desired channel path.
