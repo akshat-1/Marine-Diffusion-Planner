@@ -62,7 +62,7 @@ Using seawater density $\rho_w = 1025.0\text{ kg/m}^3$ and block coefficient $C_
 3. **Sway Added Mass ($m_y$, Norrbin Approximation)**:
    $$m_y = \rho_w \cdot \frac{\pi}{2} \cdot d^2 \cdot L \cdot \left(1 + 0.4 \frac{B}{L}\right)$$
 4. **Yaw Inertia ($I_z$) & Added Inertia ($J_z$)**:
-   $$I_z = m \cdot (0.25 L)^2, \quad J_z = 0.025 \cdot m \cdot L^2$$
+   $$I_z = m \cdot (0.25 L)^2, \quad J_z = \frac{1}{12} \cdot m_y \cdot L^2$$
 
 ---
 
@@ -195,7 +195,7 @@ m &= 1025.0 \times 0.70 \times 150.0 \times 25.0 \times 5.0 = 13,453,125.0\text{
 m_x &= 0.05 \times 13,453,125.0 = 672,656.25\text{ kg} \\
 m_y &= 1025.0 \times \frac{\pi}{2} \times (5.0)^2 \times 150.0 \times \left(1.0 + 0.4 \frac{25.0}{150.0}\right) = 6,442,750.0\text{ kg} \\
 I_z &= 13,453,125.0 \times (0.25 \times 150.0)^2 = 18,918,457,031.25\text{ kg}\cdot\text{m}^2 \\
-J_z &= 0.025 \times 13,453,125.0 \times (150.0)^2 = 7,567,382,812.5\text{ kg}\cdot\text{m}^2
+J_z &= \frac{1}{12} \times 6,442,750.0 \times (150.0)^2 = 12,080,156,250.0\text{ kg}\cdot\text{m}^2
 \end{aligned}$$
 
 #### 2. Baseline Hull Damping & Cross-Flow Resistance
@@ -211,8 +211,8 @@ F_{x,\text{ext}} &= (13,453,125.0 + 672,656.25) \cdot (0.05) - (13,453,125.0 + 6
 &= 706,289.06 - 99,479.38 + 123,000.0 = 729,809.68\text{ N} \\
 F_{y,\text{ext}} &= (13,453,125.0 + 6,442,750.0) \cdot (0.02) + (13,453,125.0 + 672,656.25) \cdot (8.0) \cdot (0.01) - (-76,875.0) \\
 &= 397,917.50 + 1,129,982.50 + 76,875.0 = 1,604,775.00\text{ N} \\
-N_{\text{ext}} &= (18,918,457,031.25 + 7,567,382,812.5) \cdot (0.001) - (-576.56) \\
-&= 26,485,839.84 + 576.56 = 26,486,416.40\text{ N}\cdot\text{m}
+N_{\text{ext}} &= (18,918,457,031.25 + 12,080,156,250.0) \cdot (0.001) - (-576.56) \\
+&= 30,998,613.28 + 576.56 = 30,999,189.84\text{ N}\cdot\text{m}
 \end{aligned}$$
 
 #### 4. Leeway Drift Angle ($\beta_{\text{drift}}$)
@@ -227,7 +227,7 @@ v_{y,\text{world}} &= 8.0 \sin(0.0) + 0.5 \cos(0.0) = 0.5\text{ m/s} \\
 $$\begin{aligned}
 a_{x,\text{ext}} &= \frac{729,809.68\text{ N}}{13,453,125.0\text{ kg}} = 0.05425\text{ m/s}^2 \\
 a_{y,\text{ext}} &= \frac{1,604,775.00\text{ N}}{13,453,125.0\text{ kg}} = 0.11929\text{ m/s}^2 \\
-\alpha_{\text{ext}} &= \frac{26,486,416.40\text{ N}\cdot\text{m}}{13,453,125.0\text{ kg} \times 150.0\text{ m}} = 0.013125\text{ rad/s}^2
+\alpha_{\text{ext}} &= \frac{30,999,189.84\text{ N}\cdot\text{m}}{13,453,125.0\text{ kg} \times 150.0\text{ m}} = 0.015359\text{ rad/s}^2
 \end{aligned}$$
 
 ---

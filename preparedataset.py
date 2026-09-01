@@ -21,7 +21,7 @@ def compute_external_forces(u, v, r, du_dt, dv_dt, dr_dt, heading, cog, length=1
     mx = 0.05 * m
     my = rho_w * (np.pi / 2.0) * (draft ** 2) * length * (1.0 + 0.4 * (width / length))
     Iz = m * (0.25 * length) ** 2
-    Jz = 0.025 * m * (length ** 2)
+    Jz = (1.0 / 12.0) * my * (length ** 2)  # Hydrodynamic strip theory added yaw inertia (Jz = 1/12 * my * L^2)
 
     # 2. Baseline Hull Damping & Cross-Flow Resistance
     Fx_hull = -0.5 * rho_w * 0.03 * (width * draft) * u * abs(u)
