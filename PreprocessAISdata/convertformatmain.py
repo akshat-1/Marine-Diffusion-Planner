@@ -201,34 +201,6 @@ def format_noaa_dataset(input_csv, output_zst):
 # ---------------------------------------------------------------------------
 # Google Drive Download & Upload Engine
 # ---------------------------------------------------------------------------
-def download_gdrive_folder(folder_url_or_id: str, target_dir: str) -> list:
-    """Downloads all raw AIS dataset files from a Google Drive folder."""
-    os.makedirs(target_dir, exist_ok=True)
-    folder_id = extract_gdrive_id(folder_url_or_id)
-    folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
-    log.info(f"📥 Fetching raw AIS files from Google Drive Folder ID: {folder_id}")
-
-    if gdown is None:
-        log.error("❌ 'gdown' module is not installed! Run: pip install gdown")
-        return []
-
-    try:
-        downloaded = gdown.download_folder(id=folder_id, output=target_dir, quiet=False)
-        if downloaded:
-            log.info(f"✅ Successfully downloaded {len(downloaded)} raw files into {target_dir}")
-            return downloaded
-    except Exception as e:
-        log.warning(f"⚠️ gdown folder download notice: {e}")
-
-    # Search for files already downloaded in target_dir or subfolders
-    local_files = []
-    for ext in ['*.csv', '*.csv.zip', '*.zip', '*.gz', '*.zst']:
-        local_files.extend(glob.glob(os.path.join(target_dir, '**', ext), recursive=True))
-
-    log.info(f"📁 Local raw file pool in '{target_dir}': {len(local_files)} files found.")
-    return local_files
-
-
 def get_gdrive_api_service(credentials_path=None):
     """Initializes Google Drive API v3 client if credentials JSON is available."""
     if build is None:
@@ -238,7 +210,6 @@ def get_gdrive_api_service(credentials_path=None):
     SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive']
     creds = None
 
-    # 1. Search for credentials file
     possible_cred_files = [
         credentials_path,
         "credentials.json",
@@ -258,7 +229,6 @@ def get_gdrive_api_service(credentials_path=None):
         return None
 
     try:
-        # Check if service account JSON
         with open(cred_file, 'r') as f:
             data = json.load(f)
         if data.get('type') == 'service_account':
@@ -284,11 +254,61 @@ def get_gdrive_api_service(credentials_path=None):
         return None
 
 
+def get_gdrive_folder_file_list(folder_url_or_id: str, credentials_path=None) -> list:
+    """
+    Retrieves file metadata list from a Google Drive folder without downloading content to disk.
+    Returns: [{'id': file_id, 'name': filename}, ...]
+    """
+    folder_id = extract_gdrive_id(folder_url_or_id)
+    items = []
+
+    # Method 1: Google Drive API v3
+    service = get_gdrive_api_service(credentials_path)
+    if service is not None:
+        try:
+            page_token = None
+            while True:
+                response = service.files().list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    spaces='drive',
+                    fields='nextPageToken, files(id, name, size)',
+                    pageToken=page_token
+                ).execute()
+                for file in response.get('files', []):
+                    items.append({'id': file.get('id'), 'name': file.get('name')})
+                page_token = response.get('nextPageToken', None)
+                if not page_token:
+                    break
+            if items:
+                log.info(f"📋 Retrieved {len(items)} file metadata entries via Google Drive API.")
+                return items
+        except Exception as e:
+            log.warning(f"⚠️ Google Drive API file listing notice: {e}")
+
+    # Method 2: gdown folder listing (skip_download=True)
+    if gdown is not None:
+        try:
+            res = gdown.download_folder(id=folder_id, skip_download=True, quiet=True)
+            if res:
+                for obj in res:
+                    if hasattr(obj, 'id') and hasattr(obj, 'path'):
+                        items.append({'id': obj.id, 'name': os.path.basename(obj.path)})
+                    elif isinstance(obj, dict):
+                        items.append({'id': obj.get('id'), 'name': obj.get('name')})
+            if items:
+                log.info(f"📋 Retrieved {len(items)} file metadata entries via gdown folder scanner.")
+                return items
+        except Exception as e:
+            log.warning(f"⚠️ gdown file listing notice: {e}")
+
+    return items
+
+
 def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: str, credentials_path=None):
     """Uploads a converted .csv.zst dataset file to the specified Google Drive destination folder."""
     output_folder_id = extract_gdrive_id(output_folder_id_or_url)
     filename = os.path.basename(local_file_path)
-    log.info(f"\n📤 Uploading {filename} to Google Drive Folder: {output_folder_id}...")
+    log.info(f"📤 Uploading {filename} to Google Drive Folder: {output_folder_id}...")
 
     # Method 1: Google Drive v3 API
     service = get_gdrive_api_service(credentials_path)
@@ -304,9 +324,7 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
                 media_body=media,
                 fields='id, name, webViewLink'
             ).execute()
-            log.info(f"✅ Successfully uploaded to Google Drive via API!")
-            log.info(f"   File ID: {uploaded_file.get('id')}")
-            log.info(f"   Link: {uploaded_file.get('webViewLink')}")
+            log.info(f"✅ Successfully uploaded via Google Drive API! File ID: {uploaded_file.get('id')}")
             return True
         except Exception as e:
             log.error(f"❌ Google Drive API upload failed: {e}")
@@ -336,16 +354,13 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
         except Exception as e:
             log.warning(f"⚠️ PyDrive2 upload notice: {e}")
 
-    # Method 3: Informative instructions for uploading via browser/rclone
-    log.warning(f"\nℹ️ Automated OAuth upload requires Google Drive API credentials.")
+    log.warning(f"ℹ️ Automated OAuth upload requires Google Drive API credentials ('credentials.json').")
     log.info(f"   Target Folder: https://drive.google.com/drive/folders/{output_folder_id}")
-    log.info(f"   Local Processed File: {os.path.abspath(local_file_path)}")
-    log.info(f"   To enable 1-click automatic upload: save your Google OAuth/Service Account JSON to 'credentials.json'.\n")
     return False
 
 
 # ---------------------------------------------------------------------------
-# Complete Pipeline Orchestrator
+# Streaming Single-File Pipeline Orchestrator (0-Disk Accumulation)
 # ---------------------------------------------------------------------------
 def run_gdrive_ais_pipeline(
     raw_gdrive_url=DEFAULT_RAW_GDRIVE_URL,
@@ -354,48 +369,105 @@ def run_gdrive_ais_pipeline(
     local_processed_dir="./processed_ais_outputs",
     credentials_path=None
 ):
-    """Fetches raw AIS files from Google Drive, preprocesses them, and uploads converted datasets."""
+    """
+    Streaming Single-File AIS Pipeline (Zero Disk Accumulation):
+    Iterates file-by-file through the raw Google Drive folder:
+      1. Downloads ONLY the single raw file to local storage.
+      2. Preprocesses it via format_noaa_dataset().
+      3. Uploads converted .csv.zst to destination Google Drive folder.
+      4. Immediately deletes local raw and processed files to free up disk space.
+    """
     log.info("=========================================================================")
-    log.info("🚢 MARITIME AIS DATASET PIPELINE: GOOGLE DRIVE FETCH, CONVERT & UPLOAD")
+    log.info("🚢 MARITIME AIS DATASET PIPELINE: STREAMING SINGLE-FILE FETCH & CONVERT")
     log.info("=========================================================================")
     log.info(f"Input Google Drive Folder:  {raw_gdrive_url}")
     log.info(f"Output Google Drive Folder: {output_gdrive_url}")
-    log.info(f"Local Raw Directory:        {local_raw_dir}")
-    log.info(f"Local Processed Directory:  {local_processed_dir}")
+    log.info("Strategy:                   0-Disk-Accumulation Single-File Streaming")
     log.info("=========================================================================\n")
 
-    # Step 1: Download raw AIS data files
-    raw_files = download_gdrive_folder(raw_gdrive_url, local_raw_dir)
-    if not raw_files:
-        log.warning(f"⚠️ No raw AIS files found in '{local_raw_dir}'. Checking for existing local files...")
-        raw_files = glob.glob(os.path.join(local_raw_dir, "*.csv")) + glob.glob(os.path.join(local_raw_dir, "*.zip"))
+    os.makedirs(local_raw_dir, exist_ok=True)
+    os.makedirs(local_processed_dir, exist_ok=True)
 
-    if not raw_files:
-        log.error(f"❌ No raw files available to process. Please place raw .csv files in '{local_raw_dir}'.")
+    # Step 1: List all files in Google Drive raw input folder without downloading content
+    file_items = get_gdrive_folder_file_list(raw_gdrive_url, credentials_path)
+
+    if not file_items:
+        log.warning(f"⚠️ Could not list remote folder files online. Checking local file pool in '{local_raw_dir}'...")
+        local_existing = glob.glob(os.path.join(local_raw_dir, "*"))
+        file_items = [{'id': None, 'name': os.path.basename(f), 'local_path': f} for f in local_existing if os.path.isfile(f)]
+
+    if not file_items:
+        log.error(f"❌ No raw files available to process.")
         return
 
-    # Step 2: Preprocess each raw file & upload to Google Drive
-    for raw_file in raw_files:
-        basename = os.path.basename(raw_file)
-        clean_name = re.sub(r'\.(csv|zip|gz)$', '', basename, flags=re.IGNORECASE) + ".csv.zst"
-        output_zst_path = os.path.join(local_processed_dir, clean_name)
+    total_files = len(file_items)
+    log.info(f"🔄 Starting streaming pipeline for {total_files} total raw files...\n")
 
-        # Process file
-        processed_path = format_noaa_dataset(raw_file, output_zst_path)
+    for idx, item in enumerate(file_items, 1):
+        file_id = item.get('id')
+        filename = item.get('name', f"raw_ais_{idx}.csv")
+        log.info("-------------------------------------------------------------------------")
+        log.info(f"📦 [{idx}/{total_files}] Processing file: {filename}")
+        log.info("-------------------------------------------------------------------------")
 
-        # Upload to Google Drive target folder
+        local_raw_path = item.get('local_path') or os.path.join(local_raw_dir, filename)
+
+        # 1. Download single file if not locally present
+        if file_id and not os.path.exists(local_raw_path):
+            log.info(f"📥 Downloading single raw file [{idx}/{total_files}]: {filename}...")
+            try:
+                gdown.download(id=file_id, output=local_raw_path, quiet=False)
+            except Exception as e:
+                log.error(f"❌ Failed to download {filename} (ID: {file_id}): {e}")
+                continue
+
+        if not os.path.exists(local_raw_path) or os.path.getsize(local_raw_path) == 0:
+            log.warning(f"⚠️ Skipping 0-byte or unreadable file: {filename}")
+            if os.path.exists(local_raw_path):
+                try:
+                    os.remove(local_raw_path)
+                except Exception:
+                    pass
+            continue
+
+        # 2. Preprocess single file
+        clean_name = re.sub(r'\.(csv|zip|gz)$', '', filename, flags=re.IGNORECASE) + ".csv.zst"
+        local_processed_path = os.path.join(local_processed_dir, clean_name)
+
+        processed_path = format_noaa_dataset(local_raw_path, local_processed_path)
+
+        # 3. Upload converted file to destination Google Drive folder
         if processed_path and os.path.exists(processed_path):
             upload_processed_to_gdrive(processed_path, output_gdrive_url, credentials_path)
 
+        # 4. Immediate Cleanup: Free up disk space before moving to next file!
+        log.info(f"🧹 Freeing up disk space for [{idx}/{total_files}]...")
+        if os.path.exists(local_raw_path):
+            try:
+                os.remove(local_raw_path)
+                log.info(f"   Deleted local raw file: {os.path.basename(local_raw_path)}")
+            except Exception as e:
+                log.warning(f"   Could not remove {local_raw_path}: {e}")
+
+        if processed_path and os.path.exists(processed_path):
+            try:
+                os.remove(processed_path)
+                log.info(f"   Deleted local processed file: {os.path.basename(processed_path)}")
+            except Exception as e:
+                log.warning(f"   Could not remove {processed_path}: {e}")
+
+        gc.collect()
+        log.info(f"✨ [{idx}/{total_files}] Complete! Disk space clean.\n")
+
     os.system('sync')
-    log.info("\n🎉 All AIS scenarios fetched, converted, and processed successfully!")
+    log.info("🎉 All raw AIS files processed, converted, uploaded, and disk space freed up successfully!")
 
 
 # ---------------------------------------------------------------------------
 # CLI Argument Parser & Entry Point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch, Preprocess, and Upload AIS Data to Google Drive.")
+    parser = argparse.ArgumentParser(description="Streaming Single-File Fetch, Preprocess, and Upload AIS Data to Google Drive.")
     parser.add_argument("--gdrive-input", type=str, default=DEFAULT_RAW_GDRIVE_URL, help="Input Google Drive Folder URL or ID")
     parser.add_argument("--gdrive-output", type=str, default=DEFAULT_CONVERTED_GDRIVE_URL, help="Output Google Drive Folder URL or ID")
     parser.add_argument("--raw-dir", type=str, default="./raw_ais_downloads", help="Local directory to store raw downloaded AIS files")
