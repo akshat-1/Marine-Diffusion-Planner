@@ -117,11 +117,57 @@ def get_year_specific_rules(year):
     return rules
 
 
+def read_raw_ais_dataframe(input_path: str) -> pd.DataFrame:
+    """Reads raw AIS dataset files supporting uncompressed (.csv), ZStandard (.csv.zst, .zst), Gzip (.gz), and Zip (.zip)."""
+    ext = input_path.lower()
+    
+    # 1. High-Speed PyArrow Reader
+    try:
+        if ext.endswith('.zst') or ext.endswith('.zstd'):
+            import pyarrow as pa
+            input_stream = pa.CompressedInputStream(input_path, 'zstd')
+            table = pv.read_csv(
+                input_stream,
+                convert_options=pv.ConvertOptions(column_types={'MMSI': 'int32', 'mmsi': 'int32'})
+            )
+            return table.to_pandas()
+        elif ext.endswith('.gz') or ext.endswith('.gzip'):
+            import pyarrow as pa
+            input_stream = pa.CompressedInputStream(input_path, 'gzip')
+            table = pv.read_csv(
+                input_stream,
+                convert_options=pv.ConvertOptions(column_types={'MMSI': 'int32', 'mmsi': 'int32'})
+            )
+            return table.to_pandas()
+        else:
+            table = pv.read_csv(
+                input_path,
+                convert_options=pv.ConvertOptions(column_types={'MMSI': 'int32', 'mmsi': 'int32'})
+            )
+            return table.to_pandas()
+    except Exception as pyarrow_err:
+        log.warning(f"⚠️ PyArrow direct read notice for {os.path.basename(input_path)}: {pyarrow_err}. Falling back to Pandas...")
+
+    # 2. Robust Pandas Fallback Reader
+    try:
+        if ext.endswith('.zst') or ext.endswith('.zstd'):
+            return pd.read_csv(input_path, compression='zstd', low_memory=False)
+        elif ext.endswith('.zip'):
+            return pd.read_csv(input_path, compression='zip', low_memory=False)
+        elif ext.endswith('.gz') or ext.endswith('.gzip'):
+            return pd.read_csv(input_path, compression='gzip', low_memory=False)
+        else:
+            return pd.read_csv(input_path, compression='infer', low_memory=False)
+    except Exception as pd_err:
+        log.error(f"❌ Failed to read raw file {input_path} with Pandas: {pd_err}")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # High-Speed PyArrow File Formatter
 # ---------------------------------------------------------------------------
 def format_noaa_dataset(input_csv, output_zst):
-    """Preprocesses a raw AIS CSV file into standardized, ZST-compressed format."""
+    """Preprocesses a raw AIS CSV / CSV.ZST file into standardized, ZST-compressed format."""
     log.info(f"\n🚀 Processing: {input_csv}")
     
     if not os.path.exists(input_csv) or os.path.getsize(input_csv) == 0:
@@ -134,16 +180,9 @@ def format_noaa_dataset(input_csv, output_zst):
     def normalize_col(c):
         return re.sub(r'[^a-z0-9]', '', str(c).lower())
 
-    try:
-        table = pv.read_csv(
-            input_csv,
-            convert_options=pv.ConvertOptions(
-                column_types={'MMSI': 'int32', 'mmsi': 'int32'}
-            )
-        )
-        df = table.to_pandas()
-    except Exception as e:
-        log.error(f"❌ PyArrow failed to read {input_csv}: {e}")
+    df = read_raw_ais_dataframe(input_csv)
+    if df is None or len(df) == 0:
+        log.error(f"❌ Could not read valid DataFrame from {input_csv}")
         return None
     
     log.info(f"Loaded {len(df)} raw rows into RAM.")
