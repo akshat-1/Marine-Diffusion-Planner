@@ -126,9 +126,9 @@
     \begin{block}{Sliding Window Index Mapping (\texttt{\_build\_index\_map})}
         \begin{itemize}
             \item Maps every valid sliding window ($T_{\text{obs}} = 20, T_{\text{pred}} = 20, T_{\text{total}} = 40$).
-            \item **Dataset Capacity**: $141,064+$ sliding window tensors from $3,155$ valid scenario files.
-            \item **Outlier Filtering**: Automatically discards windows where initial-to-anchor displacement exceeds $8000\text{m}$.
-            \item **DataLoader Worker Safety**: Enforces fallback retry on XML read glitches to prevent worker process crashes.
+            \item \textbf{Dataset Capacity}: $141,064+$ sliding window tensors from $3,155$ valid scenario files.
+            \item \textbf{Outlier Filtering}: Automatically discards windows where initial-to-anchor displacement exceeds $8000\text{m}$.
+            \item \textbf{DataLoader Worker Safety}: Enforces fallback retry on XML read glitches to prevent worker process crashes.
         \end{itemize}
     \end{block}
 \end{frame}
@@ -330,7 +330,7 @@
     \end{block}
 
     \begin{itemize}
-        \item **Zero-Initialization**: Gate parameters $\alpha_i$ are initialized to 0, ensuring blocks act as identity mappings at startup.
+        \item \textbf{Zero-Initialization}: Gate parameters $\alpha_i$ are initialized to 0, ensuring blocks act as identity mappings at startup.
     \end{itemize}
 \end{frame}
 
@@ -350,7 +350,7 @@
         \begin{itemize}
             \item $\mathbf{\epsilon}$\textbf{-Prediction}: Low-noise steps produce high-frequency noise estimation errors, resulting in severe trajectory jitter ($51.07$ score).
             \item $\mathbf{\tau_0}$\textbf{-Prediction}: Directly predicts clean velocity actions $\hat{\tau}_\theta^v = \tau_\theta(x_t, t, C)$. Captures trajectory manifold smoothly ($85.05$ score).
-            \item **Supervised Velocity Loss**:
+            \item \textbf{Supervised Velocity Loss}:
               $$\mathcal{L}_{\mathrm{vel}} = \mathrm{MSE}(\hat{\tau}_\theta^v, \tau_0^v)$$
         \end{itemize}
     \end{alertblock}
@@ -457,8 +457,8 @@
 \begin{frame}{Two-Stage Sequential Training Paradigm}
     \begin{block}{Why Stage 1 (Base Model) Must Precede Stage 2 (RL Fine-Tuning)}
         \begin{itemize}
-            \item **Stage 1 (Pre-training / Base Model)**: Supervised Imitation Learning on real datasets builds multimodal driving priors ($\pi_0$).
-            \item **Stage 2 (Post-training / RL Fine-Tuning)**: Fine-tunes pre-trained base weights using Reward-Weighted Diffusion Loss.
+            \item \textbf{Stage 1 (Pre-training / Base Model)}: Supervised Imitation Learning on real datasets builds multimodal driving priors ($\pi_0$).
+            \item \textbf{Stage 2 (Post-training / RL Fine-Tuning)}: Fine-tunes pre-trained base weights using Reward-Weighted Diffusion Loss.
         \end{itemize}
     \end{block}
 
