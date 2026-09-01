@@ -238,6 +238,27 @@
     \end{block}
 \end{frame}
 
+\begin{frame}{Second-Order Mean Wave Drift Mechanics \& HDP Pipeline Usage}
+    \begin{block}{1. Wave Physics: First-Order vs. Second-Order Mean Drift}
+        \begin{itemize}
+            \item \textbf{First-Order Wave Action}: Oscillates at wave frequency (5--10s period), causing roll/pitch. Averages to \textbf{zero} over 200s trajectory horizon.
+            \item \textbf{Second-Order Mean Wave Drift ($F_{y,\mathrm{wave}}$)}: Non-linear wave diffraction; exerts a \textbf{steady, non-zero lateral push} that constantly drifts hull off course.
+        \end{itemize}
+    \end{block}
+
+    \begin{block}{2. Mass-Normalized Feature Pipeline (\texttt{preparedataset.py})}
+        Combined with wind drag into lateral residual acceleration $a_{y,\mathrm{ext}}$:
+        $$a_{y,\mathrm{ext}} = \frac{F_{y,\mathrm{ext}}}{m} = \frac{F_{y,\mathrm{wind}} + F_{y,\mathrm{wave}}}{m} \quad (\text{channel 7 of 10D State Vector})$$
+    \end{block}
+
+    \begin{block}{3. CustomDiT Proprioception Conditioning \& Adaptive Steering (\texttt{train.py})}
+        \begin{itemize}
+            \item \textbf{Calm Seas ($a_{y,\mathrm{ext}} \approx 0$)}: Model predicts straight, unperturbed hydrodynamic paths.
+            \item \textbf{Heavy Wave Action ($a_{y,\mathrm{ext}} \gg 0$)}: Model senses wave push $a_{y,\mathrm{ext}}$ via proprioception $y \in \mathbb{R}^{B \times 12}$ and predicts \textbf{crab-angle compensation \& counter-steering} to keep channel centerline.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
 \begin{frame}{Stratified Spatial \& Traffic Density Sampling}
     \begin{block}{Spatial Grid-Cell Binning (\texttt{MAX\_SCENARIOS\_PER\_GRID\_CELL = 100})}
         Caps scenario generation at 100 per $5\text{km} \times 5\text{km}$ lat/lon grid box to eliminate geographical port over-representation.
