@@ -153,7 +153,7 @@
         Ensures all 20 polyline points accurately reflect land geometry near Ego.
     \end{block}
 
-    \begin{block}{Output Feature Tensors per Sample}
+    \begin{block}{Output Feature Tensors per Sample (10D Feature Representation)}
         \begin{table}
         \centering
         \footnotesize
@@ -161,15 +161,69 @@
         \toprule
         \textbf{Tensor Name} & \textbf{Shape} & \textbf{Description} \\
         \midrule
-        \texttt{ego\_history} & $(20, 6)$ & $[x, y, v_x, v_y, \theta, r]$ past 200s history \\
-        \texttt{agents\_history} & $(10, 20, 6)$ & Surround vessels past history \\
+        \texttt{ego\_history} & $(20, 10)$ & $[x, y, v_x, v_y, \theta, r, a_{x,\mathrm{ext}}, a_{y,\mathrm{ext}}, \alpha_{\mathrm{ext}}, \beta_{\mathrm{drift}}]$ \\
+        \texttt{agents\_history} & $(10, 20, 10)$ & Surround vessels past 200s history \\
         \texttt{map\_lines} & $(20, 20, 2)$ & 20 coastlines with 20 resampled points $(x,y)$ \\
         \texttt{agent\_mask} / \texttt{map\_mask} & $(10)$, $(20)$ & Boolean padding mask (\texttt{True} = padded) \\
-        \texttt{ego\_target} & $(20, 6)$ & Ground-truth target trajectory \\
+        \texttt{ego_target} & $(20, 10)$ & Ground-truth target trajectory \\
         \bottomrule
         \end{tabular}
         \end{table}
     \end{block}
+\end{frame}
+
+\begin{frame}{10D External Force \& Drift Physics Modeling}
+    \begin{block}{Why Force Conditioning is Essential}
+        When ships drift due to wind or waves, Course Over Ground ($\mathrm{COG}$) differs from Heading ($\psi$). Unconditioned models mistake environmental leeway drift for intentional steering.
+    \end{block}
+
+    \begin{block}{MMG 3-DOF Inverse Dynamics Residue Equation}
+        We compute the mass-normalized specific external force residual vector $\mathbf{f}_{\mathrm{ext}}$:
+        $$\mathbf{f}_{\mathrm{ext}} = \left[ \frac{F_{x,\mathrm{ext}}}{m}, \; \frac{F_{y,\mathrm{ext}}}{m}, \; \frac{N_{\mathrm{ext}}}{m \cdot L}, \; \beta_{\mathrm{drift}} \right]$$
+        where $F_{y,\mathrm{ext}} = (m+m_y)\dot{v} + (m+m_x)ur - F_{y,\mathrm{hull}}$ and $\beta_{\mathrm{drift}} = \mathrm{COG} - \psi$.
+    \end{block}
+
+    \begin{itemize}
+        \item \textbf{Why Specific Force Wins}: Mass-normalized acceleration ($\text{m/s}^2$) brings small boats and container ships into unit scale $\sim [-1, 1]$, enabling \textbf{fast neural network convergence} while preserving 2nd-order acceleration physics ($\dot{u}, \dot{v}, \dot{r}$).
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Stratified Spatial \& Traffic Density Sampling}
+    \begin{block}{Spatial Grid-Cell Binning (\texttt{MAX\_SCENARIOS\_PER_GRID_CELL = 100})}
+        Caps scenario generation at 100 per $5\text{km} \times 5\text{km}$ lat/lon grid box to eliminate geographical port over-representation.
+    \end{block}
+
+    \begin{block}{Three-Tier Scenario Stratification \& Mini-Batch Balancing}
+        \begin{itemize}
+            \item \textbf{Tier 1: Congested Ports (40\%)}: $N_{\text{vessels}} \ge 5$ + Coastlines. Teaches multi-vessel collision avoidance \& COLREG rules.
+            \item \textbf{Tier 2: Coastal Intersections (40\%)}: $2 \le N_{\text{vessels}} < 5$, tactical turning ($\sum |r|\Delta t > 10^\circ$).
+            \item \textbf{Tier 3: Open Sea Regions (20\%)}: $SOG > 3\text{ knots}$, no coastlines within 8km. Teaches unconstrained multimodal paths.
+        \end{itemize}
+    \end{block}
+
+    \begin{itemize}
+        \item \textbf{\texttt{WeightedRandomSampler}}: Balances mini-batches in \texttt{train.py} so every step updates both open-sea dynamic weights and port collision weights.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Scenario Quality Ranking Engine (\texttt{validate\_scenerios.py})}
+    \begin{block}{0--100 Numerical Scenario Quality Score}
+        Evaluates and ranks generated scenario XMLs across 5 maritime metrics:
+        $$\mathrm{Quality\ Score} = \mathrm{Integrity}(30) + \mathrm{Density}(25) + \mathrm{Maneuver}(20) + \mathrm{Encounter}(15) + \mathrm{Environment}(10)$$
+    \end{block}
+
+    \begin{block}{Quality Tier Classification}
+        \begin{itemize}
+            \item \textbf{Tier S (Superior, $\ge 85$ pts)}: Rich multi-ship encounters, tactical turns, coastlines, 0 integrity issues.
+            \item \textbf{Tier A (Advanced, $70 - 84$ pts)}: Multi-ship tactical navigation scenes.
+            \item \textbf{Tier B / C (Baseline / Low Quality)}: Standard transit / low density.
+            \item \textbf{Tier F (Failed, $0$ pts)}: Hard collision, NaNs, or shallow water grounding.
+        \end{itemize}
+    \end{block}
+
+    \begin{itemize}
+        \item \textbf{CLI Top-K Exporter}: \texttt{--top-k 500 --export-dir ./top_scenarios/} copies top-ranked XMLs automatically.
+    \end{itemize}
 \end{frame}
 
 \begin{frame}{Domain-Specific Maritime Data Augmentations}
