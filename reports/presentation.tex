@@ -222,6 +222,31 @@
     \end{block}
 \end{frame}
 
+\begin{frame}{Physical \& Hydrodynamic Constants in Force Calculations}
+    \begin{table}
+    \centering
+    \scriptsize
+    \begin{tabular}{llrl}
+    \toprule
+    \textbf{Constant Name} & \textbf{Symbol} & \textbf{Value} & \textbf{Physical Meaning / Context} \\
+    \midrule
+    Seawater Density & $\rho_w$ & $1025.0\text{ kg/m}^3$ & Mass density of marine seawater \\
+    Air Density & $\rho_a$ & $1.225\text{ kg/m}^3$ & Standard atmospheric density at sea level \\
+    Gravitational Accel. & $g$ & $9.81\text{ m/s}^2$ & Gravity constant for wave action \\
+    Block Coefficient & $C_b$ & $0.70$ & Non-dimensional hull fullness ($m = \rho_w C_b L B d$) \\
+    Surge Added Mass & $m_x / m$ & $0.05$ & 5\% entrained water mass along hull longitudinal \\
+    Sway Added Mass & $m_y$ & Formula & $\rho_w \frac{\pi}{2} d^2 L \left(1 + 0.4 \frac{B}{L}\right)$ (Norrbin expansion) \\
+    Yaw Moment Radius & $k_z / L$ & $0.25$ & Gyration radius ($I_z = m (0.25 L)^2$) \\
+    Yaw Added Moment & $J_z / (m L^2)$ & $0.025$ & Added inertia moment ratio \\
+    Surge Drag Coeff. & $C_{dx}$ & $0.03$ & Longitudinal hull friction/wave resistance \\
+    Sway Drag Coeff. & $C_{dy}$ & $0.80$ & Transverse cross-flow drag coefficient \\
+    Frontal Windage Area & $A_T$ & $0.8 B^2$ & Superstructure frontal wind area estimate \\
+    Lateral Windage Area & $A_L$ & $L \cdot d_{\mathrm{freeboard}}$ & Superstructure lateral wind area estimate \\
+    \bottomrule
+    \end{tabular}
+    \end{table}
+\end{frame}
+
 \begin{frame}{Aerodynamic Wind \& Wave Force Decomposition}
     \begin{block}{Isherwood Aerodynamic Wind Force Model}
         $$\begin{aligned}
@@ -251,14 +276,16 @@
         $$a_{y,\mathrm{ext}} = \frac{F_{y,\mathrm{ext}}}{m} = \frac{F_{y,\mathrm{wind}} + F_{y,\mathrm{wave}}}{m} \quad (\text{channel 7 of 10D State Vector})$$
     \end{block}
 
-    \begin{block}{3. CustomDiT Proprioception Conditioning \& Adaptive Steering (\texttt{train.py})}
+   
+\end{frame}
+\begin{frame}{  Pipeline usage}
+     \begin{block}{3. CustomDiT Proprioception Conditioning \& Adaptive Steering (\texttt{train.py})}
         \begin{itemize}
             \item \textbf{Calm Seas ($a_{y,\mathrm{ext}} \approx 0$)}: Model predicts straight, unperturbed hydrodynamic paths.
             \item \textbf{Heavy Wave Action ($a_{y,\mathrm{ext}} \gg 0$)}: Model senses wave push $a_{y,\mathrm{ext}}$ via proprioception $y \in \mathbb{R}^{B \times 12}$ and predicts \textbf{crab-angle compensation \& counter-steering} to keep channel centerline.
         \end{itemize}
     \end{block}
 \end{frame}
-
 \begin{frame}{Stratified Spatial \& Traffic Density Sampling}
     \begin{block}{Spatial Grid-Cell Binning (\texttt{MAX\_SCENARIOS\_PER\_GRID\_CELL = 100})}
         Caps scenario generation at 100 per $5\text{km} \times 5\text{km}$ lat/lon grid box to eliminate geographical port over-representation.
