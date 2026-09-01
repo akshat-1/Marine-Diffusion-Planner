@@ -14,9 +14,9 @@ When modeling environmental disturbances (wind, wave drift, leeway currents), sh
 
 ---
 
-### Our Final Choice: **Mass-Normalized Specific Force-Kinematic Vector ($\mathbf{f}_{\text{ext}}$)**
+### Our Final Choice: **Mass-Normalized Specific Force-Kinematic Vector ($\mathbf{f}_{\mathrm{ext}}$)**
 
-$$\mathbf{f}_{\text{ext}} = \left[ \underbrace{\frac{F_{x,\text{ext}}}{m}}_{a_{x,\text{ext}} \ (\text{m/s}^2)}, \; \underbrace{\frac{F_{y,\text{ext}}}{m}}_{a_{y,\text{ext}} \ (\text{m/s}^2)}, \; \underbrace{\frac{N_{\text{ext}}}{m \cdot L}}_{\alpha_{\text{ext}} \ (\text{rad/s}^2)}, \; \underbrace{\beta_{\text{drift}}}_{\text{Drift Angle (rad)}} \right]$$
+$$\mathbf{f}_{\mathrm{ext}} = \left[ \underbrace{\frac{F_{x,\mathrm{ext}}}{m}}_{a_{x,\mathrm{ext}} \ (\text{m/s}^2)}, \; \underbrace{\frac{F_{y,\mathrm{ext}}}{m}}_{a_{y,\mathrm{ext}} \ (\text{m/s}^2)}, \; \underbrace{\frac{N_{\mathrm{ext}}}{m \cdot L}}_{\alpha_{\mathrm{ext}} \ (\text{rad/s}^2)}, \; \underbrace{\beta_{\mathrm{drift}}}_{\text{Drift Angle (rad)}} \right]$$
 
 ### Why This Choice Wins on Both Convergence & Physics:
 - **Fastest Neural Network Convergence**: By dividing forces by vessel mass $m$, we eliminate vessel scale disparities ($10^3\text{ N}$ vs $10^6\text{ N}$ across vessel sizes). All feature channels fall cleanly into unit scale $\sim [-1.0, 1.0]$.
