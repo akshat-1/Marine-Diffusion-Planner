@@ -124,6 +124,10 @@ def format_noaa_dataset(input_csv, output_zst):
     """Preprocesses a raw AIS CSV file into standardized, ZST-compressed format."""
     log.info(f"\n🚀 Processing: {input_csv}")
     
+    if not os.path.exists(input_csv) or os.path.getsize(input_csv) == 0:
+        log.warning(f"⚠️ Skipping empty or non-existent file: {input_csv}")
+        return None
+
     year = detect_dataset_year(input_csv)
     rules = get_year_specific_rules(year)
     
@@ -209,7 +213,7 @@ def download_gdrive_folder(folder_url_or_id: str, target_dir: str) -> list:
         return []
 
     try:
-        downloaded = gdown.download_folder(url=folder_url, output=target_dir, quiet=False, remaining_ok=True)
+        downloaded = gdown.download_folder(id=folder_id, output=target_dir, quiet=False)
         if downloaded:
             log.info(f"✅ Successfully downloaded {len(downloaded)} raw files into {target_dir}")
             return downloaded
