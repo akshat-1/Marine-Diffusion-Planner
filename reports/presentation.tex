@@ -32,7 +32,7 @@
 \setbeamertemplate{footline}[frame number]
 
 % --- Title Info ---
-\title[Hyper Diffusion Planner (HDP)]{HYPER DIFFUSION PLANNER (HDP)}
+\title[Hyper Diffusion Planner (HDP)]{MARINE DIFFUSION PLANNER (HDP)}
 \subtitle{End-to-End Maritime Autonomous Trajectory Generation \& System Architecture}
 \author[Data Engineering \& AI Team]{Advanced Autonomous Navigation Systems}
 \institute[DeepMind / Jcode]{DeepMind Agentic Coding \& Navigation Engineering}
@@ -193,7 +193,7 @@
         $$\begin{aligned}
         m &= \rho_w \cdot C_b \cdot L \cdot B \cdot d, \quad m_x = 0.05 \cdot m \\
         m_y &= \rho_w \cdot \frac{\pi}{2} \cdot d^2 \cdot L \cdot \left(1 + 0.4 \frac{B}{L}\right) \\
-        I_z &= m \cdot (0.25 L)^2, \quad J_z = 0.025 \cdot m \cdot L^2
+        I_z &= m \cdot (0.25 L)^2, \quad J_z = 0.025 \cdot m_y \cdot L^2
         \end{aligned}$$
     \end{block}
 
@@ -236,20 +236,6 @@
     \begin{block}{Second-Order Mean Wave Drift Force}
         $$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L C_{Dwy}(\chi)$$
         where $H_s$ is significant wave height and $C_{Dwy}(\chi)$ is wave drift coefficient.
-    \end{block}
-\end{frame}
-
-\begin{frame}{Mathematical Derivation: Significant Wave Height ($H_s$) Extraction}
-    \begin{block}{1. Wave Elevation Energy Spectrum Definition}
-        Significant wave height $H_s$ is four times the square root of the zeroth spectral moment $m_0$:
-        $$H_s = 4 \sigma_z = 4 \sqrt{m_0} = 4 \sqrt{\int_0^\infty S(\omega) d\omega}$$
-    \end{block}
-
-    \begin{block}{2. Inverse Hydrodynamic Derivation from AIS Kinematics}
-        From Maruo's 2nd-order mean wave drift equation:
-        $$F_{y,\mathrm{wave}} = \frac{1}{2} \rho_w g H_s^2 L C_{Dwy}(\chi)$$
-        Subtracting wind drag $F_{y,\mathrm{wind}}$ from total MMG residual $F_{y,\mathrm{ext}} = (m+m_y)\dot{v} + (m+m_x)ur - F_{y,\mathrm{hull}}$ isolates $F_{y,\mathrm{wave}}$. Rearranging yields the \textbf{effective equivalent wave height $H_s$}:
-        $$H_s = \sqrt{\frac{2 \cdot |F_{y,\mathrm{ext}} - F_{y,\mathrm{wind}}|}{\rho_w \cdot g \cdot L \cdot C_{Dwy}(\chi)}}$$
     \end{block}
 \end{frame}
 
@@ -321,25 +307,7 @@
     \end{itemize}
 \end{frame}
 
-\begin{frame}{Scenario Quality Ranking Engine (\texttt{validate\_scenarios.py})}
-    \begin{block}{0--100 Numerical Scenario Quality Score}
-        Evaluates and ranks generated scenario XMLs across 5 maritime metrics:
-        $$\mathrm{Quality\ Score} = \mathrm{Integrity}(30) + \mathrm{Density}(25) + \mathrm{Maneuver}(20) + \mathrm{Encounter}(15) + \mathrm{Environment}(10)$$
-    \end{block}
 
-    \begin{block}{Quality Tier Classification}
-        \begin{itemize}
-            \item \textbf{Tier S (Superior, $\ge 85$ pts)}: Rich multi-ship encounters, tactical turns, coastlines, 0 integrity issues.
-            \item \textbf{Tier A (Advanced, $70 - 84$ pts)}: Multi-ship tactical navigation scenes.
-            \item \textbf{Tier B / C (Baseline / Low Quality)}: Standard transit / low density.
-            \item \textbf{Tier F (Failed, $0$ pts)}: Hard collision, NaNs, or shallow water grounding.
-        \end{itemize}
-    \end{block}
-
-    \begin{itemize}
-        \item \textbf{CLI Top-K Exporter}: \texttt{--top-k 500 --export-dir ./top\_scenarios/} copies top-ranked XMLs automatically.
-    \end{itemize}
-\end{frame}
 
 \begin{frame}{Domain-Specific Maritime Data Augmentations}
     \begin{block}{Online Data Augmentation Pipeline (\texttt{apply\_maritime\_augmentations})}
