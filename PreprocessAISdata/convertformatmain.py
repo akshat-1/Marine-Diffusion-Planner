@@ -399,6 +399,84 @@ def upload_processed_to_gdrive(local_file_path: str, output_folder_id_or_url: st
 
 
 # ---------------------------------------------------------------------------
+# Parallel Worker Function (Single-File Streamer)
+# ---------------------------------------------------------------------------
+def process_single_raw_file_item(
+    item: dict,
+    idx: int,
+    total_files: int,
+    local_raw_dir: str,
+    local_processed_dir: str,
+    output_gdrive_url: str,
+    credentials_path: str = None
+) -> bool:
+    """
+    Worker function executed in parallel across CPU cores:
+    1. Downloads single raw file if not present.
+    2. Preprocesses file using PyArrow/Pandas across CPU cores.
+    3. Uploads converted .csv.zst file to destination Google Drive folder.
+    4. Immediately frees up disk space by deleting local raw & processed files.
+    """
+    pid = os.getpid()
+    file_id = item.get('id')
+    filename = item.get('name', f"raw_ais_{idx}.csv")
+    local_raw_path = item.get('local_path') or os.path.join(local_raw_dir, filename)
+
+    log.info("-------------------------------------------------------------------------")
+    log.info(f"📦 [Worker PID {pid}] [{idx}/{total_files}] Processing file: {filename}")
+    log.info("-------------------------------------------------------------------------")
+
+    # 1. Download single file if not locally present
+    if file_id and not os.path.exists(local_raw_path):
+        log.info(f"📥 [PID {pid}] Downloading single raw file [{idx}/{total_files}]: {filename}...")
+        try:
+            gdown.download(id=file_id, output=local_raw_path, quiet=True)
+        except Exception as e:
+            log.error(f"❌ [PID {pid}] Failed to download {filename} (ID: {file_id}): {e}")
+            return False
+
+    if not os.path.exists(local_raw_path) or os.path.getsize(local_raw_path) == 0:
+        log.warning(f"⚠️ [PID {pid}] Skipping 0-byte or unreadable file: {filename}")
+        if os.path.exists(local_raw_path):
+            try:
+                os.remove(local_raw_path)
+            except Exception:
+                pass
+        return False
+
+    # 2. Preprocess single file
+    clean_name = re.sub(r'\.(csv|zip|gz|zst|zstd)+$', '', filename, flags=re.IGNORECASE)
+    clean_name = re.sub(r'\.csv$', '', clean_name, flags=re.IGNORECASE) + ".csv.zst"
+    local_processed_path = os.path.join(local_processed_dir, clean_name)
+
+    processed_path = format_noaa_dataset(local_raw_path, local_processed_path)
+
+    # 3. Upload converted file to destination Google Drive folder
+    if processed_path and os.path.exists(processed_path):
+        upload_processed_to_gdrive(processed_path, output_gdrive_url, credentials_path)
+
+    # 4. Immediate Cleanup: Free up disk space before moving to next file!
+    log.info(f"🧹 [PID {pid}] Freeing up disk space for [{idx}/{total_files}]...")
+    if os.path.exists(local_raw_path):
+        try:
+            os.remove(local_raw_path)
+            log.info(f"   Deleted local raw file: {os.path.basename(local_raw_path)}")
+        except Exception as e:
+            log.warning(f"   Could not remove {local_raw_path}: {e}")
+
+    if processed_path and os.path.exists(processed_path):
+        try:
+            os.remove(processed_path)
+            log.info(f"   Deleted local processed file: {os.path.basename(processed_path)}")
+        except Exception as e:
+            log.warning(f"   Could not remove {processed_path}: {e}")
+
+    gc.collect()
+    log.info(f"✨ [PID {pid}] [{idx}/{total_files}] Complete! Disk space clean.\n")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Streaming Single-File Pipeline Orchestrator (0-Disk Accumulation)
 # ---------------------------------------------------------------------------
 def run_gdrive_ais_pipeline(
@@ -406,22 +484,28 @@ def run_gdrive_ais_pipeline(
     output_gdrive_url=DEFAULT_CONVERTED_GDRIVE_URL,
     local_raw_dir="./raw_ais_downloads",
     local_processed_dir="./processed_ais_outputs",
-    credentials_path=None
+    credentials_path=None,
+    num_workers=None
 ):
     """
     Streaming Single-File AIS Pipeline (Zero Disk Accumulation):
-    Iterates file-by-file through the raw Google Drive folder:
-      1. Downloads ONLY the single raw file to local storage.
+    Iterates file-by-file through the raw Google Drive folder across multiple CPU worker cores:
+      1. Downloads ONLY the single raw file per worker to local storage.
       2. Preprocesses it via format_noaa_dataset().
       3. Uploads converted .csv.zst to destination Google Drive folder.
       4. Immediately deletes local raw and processed files to free up disk space.
     """
+    if num_workers is None:
+        num_workers = min(os.cpu_count() or 4, 8)
+    num_workers = max(1, int(num_workers))
+
     log.info("=========================================================================")
-    log.info("🚢 MARITIME AIS DATASET PIPELINE: STREAMING SINGLE-FILE FETCH & CONVERT")
+    log.info("🚢 MARITIME AIS DATASET PIPELINE: PARALLEL STREAMING FETCH & CONVERT")
     log.info("=========================================================================")
     log.info(f"Input Google Drive Folder:  {raw_gdrive_url}")
     log.info(f"Output Google Drive Folder: {output_gdrive_url}")
-    log.info("Strategy:                   0-Disk-Accumulation Single-File Streaming")
+    log.info(f"Parallel Worker CPU Cores:  {num_workers} Workers")
+    log.info("Strategy:                   0-Disk-Accumulation Parallel Single-File Streaming")
     log.info("=========================================================================\n")
 
     os.makedirs(local_raw_dir, exist_ok=True)
@@ -440,63 +524,21 @@ def run_gdrive_ais_pipeline(
         return
 
     total_files = len(file_items)
-    log.info(f"🔄 Starting streaming pipeline for {total_files} total raw files...\n")
+    log.info(f"🔄 Starting parallel streaming pipeline for {total_files} total raw files across {num_workers} CPU cores...\n")
 
-    for idx, item in enumerate(file_items, 1):
-        file_id = item.get('id')
-        filename = item.get('name', f"raw_ais_{idx}.csv")
-        log.info("-------------------------------------------------------------------------")
-        log.info(f"📦 [{idx}/{total_files}] Processing file: {filename}")
-        log.info("-------------------------------------------------------------------------")
-
-        local_raw_path = item.get('local_path') or os.path.join(local_raw_dir, filename)
-
-        # 1. Download single file if not locally present
-        if file_id and not os.path.exists(local_raw_path):
-            log.info(f"📥 Downloading single raw file [{idx}/{total_files}]: {filename}...")
-            try:
-                gdown.download(id=file_id, output=local_raw_path, quiet=False)
-            except Exception as e:
-                log.error(f"❌ Failed to download {filename} (ID: {file_id}): {e}")
-                continue
-
-        if not os.path.exists(local_raw_path) or os.path.getsize(local_raw_path) == 0:
-            log.warning(f"⚠️ Skipping 0-byte or unreadable file: {filename}")
-            if os.path.exists(local_raw_path):
-                try:
-                    os.remove(local_raw_path)
-                except Exception:
-                    pass
-            continue
-
-        # 2. Preprocess single file
-        clean_name = re.sub(r'\.(csv|zip|gz)$', '', filename, flags=re.IGNORECASE) + ".csv.zst"
-        local_processed_path = os.path.join(local_processed_dir, clean_name)
-
-        processed_path = format_noaa_dataset(local_raw_path, local_processed_path)
-
-        # 3. Upload converted file to destination Google Drive folder
-        if processed_path and os.path.exists(processed_path):
-            upload_processed_to_gdrive(processed_path, output_gdrive_url, credentials_path)
-
-        # 4. Immediate Cleanup: Free up disk space before moving to next file!
-        log.info(f"🧹 Freeing up disk space for [{idx}/{total_files}]...")
-        if os.path.exists(local_raw_path):
-            try:
-                os.remove(local_raw_path)
-                log.info(f"   Deleted local raw file: {os.path.basename(local_raw_path)}")
-            except Exception as e:
-                log.warning(f"   Could not remove {local_raw_path}: {e}")
-
-        if processed_path and os.path.exists(processed_path):
-            try:
-                os.remove(processed_path)
-                log.info(f"   Deleted local processed file: {os.path.basename(processed_path)}")
-            except Exception as e:
-                log.warning(f"   Could not remove {processed_path}: {e}")
-
-        gc.collect()
-        log.info(f"✨ [{idx}/{total_files}] Complete! Disk space clean.\n")
+    # Step 2: Execute parallel processing workers across CPU cores
+    if num_workers > 1:
+        Parallel(n_jobs=num_workers, backend="loky")(
+            delayed(process_single_raw_file_item)(
+                item, idx, total_files, local_raw_dir, local_processed_dir, output_gdrive_url, credentials_path
+            )
+            for idx, item in enumerate(file_items, 1)
+        )
+    else:
+        for idx, item in enumerate(file_items, 1):
+            process_single_raw_file_item(
+                item, idx, total_files, local_raw_dir, local_processed_dir, output_gdrive_url, credentials_path
+            )
 
     os.system('sync')
     log.info("🎉 All raw AIS files processed, converted, uploaded, and disk space freed up successfully!")
@@ -506,11 +548,12 @@ def run_gdrive_ais_pipeline(
 # CLI Argument Parser & Entry Point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Streaming Single-File Fetch, Preprocess, and Upload AIS Data to Google Drive.")
+    parser = argparse.ArgumentParser(description="Parallel Streaming Fetch, Preprocess, and Upload AIS Data to Google Drive.")
     parser.add_argument("--gdrive-input", type=str, default=DEFAULT_RAW_GDRIVE_URL, help="Input Google Drive Folder URL or ID")
     parser.add_argument("--gdrive-output", type=str, default=DEFAULT_CONVERTED_GDRIVE_URL, help="Output Google Drive Folder URL or ID")
     parser.add_argument("--raw-dir", type=str, default="./raw_ais_downloads", help="Local directory to store raw downloaded AIS files")
     parser.add_argument("--processed-dir", type=str, default="./processed_ais_outputs", help="Local directory to store converted .csv.zst files")
+    parser.add_argument("--num-workers", type=int, default=None, help="Number of parallel CPU worker cores (default: auto-detected CPU cores)")
     parser.add_argument("--credentials", type=str, default=None, help="Path to Google Drive OAuth2 / Service Account credentials JSON")
     parser.add_argument("--local-input", type=str, default=None, help="Path to a single local raw CSV file to format directly")
     parser.add_argument("--local-output", type=str, default=None, help="Path to output converted .csv.zst file")
@@ -526,5 +569,6 @@ if __name__ == "__main__":
             output_gdrive_url=args.gdrive_output,
             local_raw_dir=args.raw_dir,
             local_processed_dir=args.processed_dir,
-            credentials_path=args.credentials
+            credentials_path=args.credentials,
+            num_workers=args.num_workers
         )
