@@ -72,7 +72,7 @@ $$\alpha_t = \mathbb{E}\left[\frac{\mathbf{x}_t}{\mathbf{x}_0}\right] = \exp\lef
 
 By the Itô isometry, the variance of the stochastic integral is:
 
-$$\sigma_t^2 = \operatorname{Var}(\mathbf{x}_t \mid \mathbf{x}_0) = \int_0^t \exp\left(-\int_s^t \beta(u)\,\mathrm{d}u\right) \beta(s) \,\mathrm{d}s$$
+$$\sigma_t^2 = \mathrm{Var}(\mathbf{x}_t \mid \mathbf{x}_0) = \int_0^t \exp\left(-\int_s^t \beta(u)\,\mathrm{d}u\right) \beta(s) \,\mathrm{d}s$$
 
 Let $v(s) = \int_s^t \beta(u)\,\mathrm{d}u$. Then $\mathrm{d}v(s) = -\beta(s)\,\mathrm{d}s$. The integral becomes:
 
@@ -235,7 +235,7 @@ $$\Delta_k = d_k^{\text{GT}} - d_k^{\text{pred}} - \delta_{\text{margin}}$$
 
 The loss is defined as:
 
-$$\mathcal{L}_{\text{obs}} = \frac{\sum_{b=1}^B \mathbb{I}(\text{has\_coastline}_b) \cdot \frac{1}{H} \sum_{k=1}^H \left[\operatorname{ReLU}(\Delta_k)\right]^2}{\sum_{b=1}^B \mathbb{I}(\text{has\_coastline}_b) + \epsilon}$$
+$$\mathcal{L}_{\text{obs}} = \frac{\sum_{b=1}^B \mathbb{I}(\text{has\_coastline}_b) \cdot \frac{1}{H} \sum_{k=1}^H \left[\mathrm{ReLU}(\Delta_k)\right]^2}{\sum_{b=1}^B \mathbb{I}(\text{has\_coastline}_b) + \epsilon}$$
 
 #### Mathematical Proof of Gradient Alignment
 Traditional repulsive obstacle potentials add an absolute penalty:
@@ -247,10 +247,10 @@ This creates a conflicting gradient: when expert human vessels operate in narrow
 Under IC-RCDL:
 1. When $\hat{\mathbf{p}}_k = \mathbf{p}_k^{\text{GT}}$, we have $d_k^{\text{pred}} = d_k^{\text{GT}}$. Then:
    $$\Delta_k = -\delta_{\text{margin}} = -10.0 < 0$$
-   $$\operatorname{ReLU}(\Delta_k) = 0 \implies \mathcal{L}_{\text{obs}} = 0, \quad \nabla_{\theta}\mathcal{L}_{\text{obs}} = \mathbf{0}$$
+   $$\mathrm{ReLU}(\Delta_k) = 0 \implies \mathcal{L}_{\text{obs}} = 0, \quad \nabla_{\theta}\mathcal{L}_{\text{obs}} = \mathbf{0}$$
 2. The global minimum of the expert imitation objective lies in the zero-penalty basin of $\mathcal{L}_{\text{obs}}$.
 3. Penalties activate if and only if the predicted vessel strays closer to shore than the expert demonstration by more than $\delta_{\text{margin}}$:
-   $$\frac{\partial \mathcal{L}_{\text{obs}}}{\partial \hat{\mathbf{p}}_k} = -2 \operatorname{ReLU}(\Delta_k) \cdot \frac{\hat{\mathbf{p}}_k - \mathbf{m}_{l^*}}{\|\hat{\mathbf{p}}_k - \mathbf{m}_{l^*}\|_2}$$
+   $$\frac{\partial \mathcal{L}_{\text{obs}}}{\partial \hat{\mathbf{p}}_k} = -2 \mathrm{ReLU}(\Delta_k) \cdot \frac{\hat{\mathbf{p}}_k - \mathbf{m}_{l^*}}{\|\hat{\mathbf{p}}_k - \mathbf{m}_{l^*}\|_2}$$
    where $\mathbf{m}_{l^*}$ is the nearest obstacle point. The restoring gradient points directly along the outward surface normal away from land.
 
 ---
@@ -269,7 +269,7 @@ with configured hyperparameters:
 
 Parameter updates use AdamW with cosine learning rate scheduling:
 
-$$\theta_{k+1} = \theta_k - \eta_k \cdot \operatorname{AdamW}\left(\nabla_\theta \mathcal{L}_{\text{total}}\right)$$
+$$\theta_{k+1} = \theta_k - \eta_k \cdot \mathrm{AdamW}\left(\nabla_\theta \mathcal{L}_{\text{total}}\right)$$
 
 Exponential Moving Average (EMA) weights are updated with decay rate $\mu = 0.999$:
 
